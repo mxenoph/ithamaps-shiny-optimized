@@ -408,6 +408,9 @@ adm2_sf <- read_sf("ADM2.gpkg")
 adm0_sel <- adm0_sf %>% dplyr::select(geo_admin0, name, geom) %>% rename("Region" = name)
 adm1_sel <- adm1_sf %>% dplyr::select(geo_admin1, name, geom) %>% rename("Region1" = name)
 adm2_sel <- adm2_sf %>% dplyr::select(geo_admin2, name, geom) %>% rename("Region2" = name)
+adm0_lookup <- adm0_sel %>% st_drop_geometry()
+adm1_lookup <- adm1_sel %>% st_drop_geometry()
+adm2_lookup <- adm2_sel %>% st_drop_geometry()
 
 # ---------------------------------------------------------------------------
 # Query helpers (called per-session inside server)
@@ -463,12 +466,42 @@ normalize_query_string <- function(raw_qs) {
   sub("^\\?", "", raw_qs)
 }
 
+entries_to_point_sf <- function(data) {
+  if (is.null(data) || nrow(data) == 0) {
+    return(NULL)
+  }
+
+  data %>%
+    mutate(
+      longitude = suppressWarnings(as.numeric(longitude)),
+      latitude = suppressWarnings(as.numeric(latitude))
+    ) %>%
+    filter(!is.na(longitude), !is.na(latitude)) %>%
+    st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+}
+
+timed_call <- function(timing_env, label, fn) {
+  start <- proc.time()[["elapsed"]]
+  value <- fn()
+  timing_env[[label]] <- round(proc.time()[["elapsed"]] - start, 3)
+  value
+}
+
+timing_list <- function(timing_env) {
+  as.list.environment(timing_env, all.names = TRUE)
+}
+
 # ---------------------------------------------------------------------------
 # build_query_bundle(): run per session from URL query string.
 # Returns list(SubsetE, SubsetG, MetricN).  All NULL when no valid query.
 # ---------------------------------------------------------------------------
 build_query_bundle <- function(raw_qs) {
-  Query <- Extract(Parse(raw_qs))
+  timing_env <- new.env(parent = emptyenv())
+  total_start <- proc.time()[["elapsed"]]
+
+  Query <- timed_call(timing_env, "parse_extract", function() {
+    Extract(Parse(raw_qs))
+  })
 
   # Joomla iframe currently forwards only country; default to Country-level resolution.
   if (!is.null(Query$Country) && is.null(Query$Resolution)) {
@@ -496,86 +529,104 @@ build_query_bundle <- function(raw_qs) {
   SubsetE <- NULL; SubsetHCP <- NULL; SubsetG <- NULL; MetricN <- NULL
 
   # --- Resolution & Region ---
-  if ("Resolution" %in% names(Info) && !is.na(Info$Resolution)) {
+  resolution_result <- timed_call(timing_env, "resolution_filter", function() {
+    result <- list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
+
+    if (!("Resolution" %in% names(Info)) || is.na(Info$Resolution)) {
+      return(result)
+    }
+
     Field <- Resolution[Resolution$Option == Info$Resolution, "Option"]
     if (length(Field) > 0 && Field == "Global-level") {
-      SubsetHCP <- db_hcp_per_region %>% select(-Country, -continentName)
-      SubsetE   <- db_ithamaps_entries %>% select(-Country, -continentName)
+      result$SubsetHCP <- db_hcp_per_region %>% select(-Country, -continentName)
+      result$SubsetE   <- db_ithamaps_entries %>% select(-Country, -continentName)
     }
     if (length(Field) > 0 && Field == "Continent-level") {
       if ("Continent" %in% names(Info) && !is.na(Info$Continent)) {
         Field <- Continent[Continent$Option == Info$Continent, "Option"]
-        SubsetHCP <- db_hcp_per_region %>% filter(continentName == Field) %>% select(-Country, -continentName)
-        SubsetE   <- db_ithamaps_entries %>% filter(continentName == Field) %>% select(-Country, -continentName)
+        result$SubsetHCP <- db_hcp_per_region %>% filter(continentName == Field) %>% select(-Country, -continentName)
+        result$SubsetE   <- db_ithamaps_entries %>% filter(continentName == Field) %>% select(-Country, -continentName)
       }
     }
     if (length(Field) > 0 && Field == "Country-level") {
       if ("Country" %in% names(Info) && !is.na(Info$Country)) {
         Field <- Country[Country$Option == Info$Country, "Option"]
-        SubsetHCP <- db_hcp_per_region %>% filter(Country == Field) %>% select(-Country, -continentName)
-        SubsetE   <- db_ithamaps_entries %>% filter(Country == Field) %>% select(-Country, -continentName)
+        result$SubsetHCP <- db_hcp_per_region %>% filter(Country == Field) %>% select(-Country, -continentName)
+        result$SubsetE   <- db_ithamaps_entries %>% filter(Country == Field) %>% select(-Country, -continentName)
       }
     }
-  }
+    result
+  })
+  SubsetE <- resolution_result$SubsetE
+  SubsetHCP <- resolution_result$SubsetHCP
 
   # --- Parameter, Hemoglobinopathy, Globin phenotype, IthaID, Healthcare ---
-  if (!is.null(SubsetE) && "Parameter" %in% names(Info) && !is.na(Info$Parameter)) {
+  parameter_result <- timed_call(timing_env, "parameter_filter", function() {
+    result <- list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
+
+    if (is.null(SubsetE) || !("Parameter" %in% names(Info)) || is.na(Info$Parameter)) {
+      return(result)
+    }
+
     Field <- Parameter[Parameter$Option == Info$Parameter, "Option"]
     if (length(Field) > 0 && Field == "Healthcare availability") {
-      SubsetE <- NULL
+      result$SubsetE <- NULL
       if ("HemoglobinopathyH" %in% names(Info) && !is.na(Info$HemoglobinopathyH)) {
         Field <- HemoglobinopathyH[HemoglobinopathyH$Option == Info$HemoglobinopathyH, "Option"]
-        SubsetHCP <- SubsetHCP %>% filter(cause_name == Field) %>% select(-cause_name)
+        result$SubsetHCP <- result$SubsetHCP %>% filter(cause_name == Field) %>% select(-cause_name)
         if ("Healthcare" %in% names(Info) && !is.na(Info$Healthcare)) {
           Field <- Healthcare[Healthcare$Option == Info$Healthcare, "Option"]
-          SubsetHCP <- SubsetHCP %>% filter(hcp_name_ancestor == Field) %>% select(-hcp_name_ancestor)
+          result$SubsetHCP <- result$SubsetHCP %>% filter(hcp_name_ancestor == Field) %>% select(-hcp_name_ancestor)
           for (sn in 1:13) {
             key <- paste0("HealthcareS", sn)
             if (key %in% names(Info) && !is.na(Info[[key]])) {
               HCS <- lookup[[key]]
               Field <- HCS[HCS$Option == Info[[key]], "Option"]
-              SubsetHCP <- SubsetHCP %>% filter(hcp_name == Field) %>% select(-hcp_name)
+              result$SubsetHCP <- result$SubsetHCP %>% filter(hcp_name == Field) %>% select(-hcp_name)
               break
             }
           }
         }
       }
     } else if (length(Field) > 0) {
-      SubsetHCP <- NULL
-      SubsetE <- SubsetE %>% filter(measure_name == Field) %>% select(-measure_name)
+      result$SubsetHCP <- NULL
+      result$SubsetE <- result$SubsetE %>% filter(measure_name == Field) %>% select(-measure_name)
       if (Field == "Allele frequency") {
-        SubsetE <- SubsetE %>% select(-cause_name)
+        result$SubsetE <- result$SubsetE %>% select(-cause_name)
         if ("GlobinPheAF" %in% names(Info) && !is.na(Info$GlobinPheAF)) {
           Field <- GlobinPheAF[GlobinPheAF$Option == Info$GlobinPheAF, "Option"]
-          SubsetE <- SubsetE %>% filter(globin_phenotype == Field) %>% select(-phenotype)
+          result$SubsetE <- result$SubsetE %>% filter(globin_phenotype == Field) %>% select(-phenotype)
         }
       }
       if (Field == "Relative allele frequency") {
-        SubsetE <- SubsetE %>% select(-cause_name)
+        result$SubsetE <- result$SubsetE %>% select(-cause_name)
         if ("VariantC" %in% names(Info) && !is.na(Info$VariantC)) {
           vField <- VariantC[VariantC$Option == Info$VariantC, "Option"]
           if (vField == "Grouped variants by globin phenotype" &&
               "GlobinPheRAF" %in% names(Info) && !is.na(Info$GlobinPheRAF)) {
             Field <- GlobinPheRAF[GlobinPheRAF$Option == Info$GlobinPheRAF, "Option"]
-            SubsetE <- SubsetE %>% filter(phenotype == Field) %>% select(-phenotype)
+            result$SubsetE <- result$SubsetE %>% filter(phenotype == Field) %>% select(-phenotype)
           }
           if (vField == "Individual variants" &&
               "IthaID" %in% names(Info) && !is.na(Info$IthaID)) {
             Field <- IthaID[IthaID$Option == Info$IthaID, "Option"]
-            SubsetE <- SubsetE %>% filter(ithaID == Field) %>% select(-phenotype)
+            result$SubsetE <- result$SubsetE %>% filter(ithaID == Field) %>% select(-phenotype)
           }
         }
       }
       if ("HemoglobinopathyC" %in% names(Info) && !is.na(Info$HemoglobinopathyC)) {
         Field <- HemoglobinopathyC[HemoglobinopathyC$Option == Info$HemoglobinopathyC, "Option"]
-        SubsetE <- SubsetE %>% filter(cause_name == Field) %>% select(-cause_name, -phenotype)
+        result$SubsetE <- result$SubsetE %>% filter(cause_name == Field) %>% select(-cause_name, -phenotype)
       }
       if ("HemoglobinopathyP" %in% names(Info) && !is.na(Info$HemoglobinopathyP)) {
         Field <- HemoglobinopathyP[HemoglobinopathyP$Option == Info$HemoglobinopathyP, "Option"]
-        SubsetE <- SubsetE %>% filter(cause_name == Field) %>% select(-cause_name, -phenotype)
+        result$SubsetE <- result$SubsetE %>% filter(cause_name == Field) %>% select(-cause_name, -phenotype)
       }
     }
-  }
+    result
+  })
+  SubsetE <- parameter_result$SubsetE
+  SubsetHCP <- parameter_result$SubsetHCP
 
   # --- Metric & Aggregation ---
   if (!is.null(SubsetE)) {
@@ -596,103 +647,158 @@ build_query_bundle <- function(raw_qs) {
       "District-level" = "geo_admin2"
     )
     Names <- colnames(SubsetE)
-    SubsetE <- SubsetE %>%
-      filter(!is.na(.data[[group_col]])) %>%
-      group_by(.data[[group_col]]) %>%
-      distinct(value, .keep_all = TRUE)
+    SubsetE <- timed_call(timing_env, "group_prepare", function() {
+      SubsetE %>%
+        filter(!is.na(.data[[group_col]])) %>%
+        group_by(.data[[group_col]]) %>%
+        distinct(value, .keep_all = TRUE)
+    })
 
-    if (is.null(mField) || length(mField) == 0 || is.na(mField)) {
-      SubsetE <- SubsetE %>% mutate(Metric = value)
-    } else if (mField == "Max") {
-      SubsetE <- SubsetE %>% mutate(Metric = max(value, na.rm = TRUE))
-    } else if (mField == "Min") {
-      SubsetE <- SubsetE %>% mutate(Metric = min(value, na.rm = TRUE))
-    } else if (mField == "Largest") {
-      SubsetE <- SubsetE %>% mutate(Metric = if (all(is.na(sample_size))) NA_real_ else value[which.max(sample_size)])
-    } else if (mField == "Latest") {
-      SubsetE <- SubsetE %>% mutate(Metric = if (all(is.na(end_year))) NA_real_ else value[which.max(end_year)])
-    } else if (mField == "Median") {
-      SubsetE <- SubsetE %>% mutate(Metric = median(value, na.rm = TRUE))
-    } else if (mField == "Mean") {
-      SubsetE <- SubsetE %>% mutate(Metric = mean(value, na.rm = TRUE))
-    } else if (mField == "Wmean") {
-      SubsetE <- SubsetE %>%
-        mutate(Metric = tryCatch({
-          metric_data <- cur_data() %>%
-            filter(!is.na(count)) %>%
-            filter(!is.na(sample_size)) %>%
-            filter(count != 0)
+    SubsetE <- timed_call(timing_env, "metric_compute", function() {
+      if (is.null(mField) || length(mField) == 0 || is.na(mField)) {
+        return(SubsetE %>% mutate(Metric = value))
+      }
+      if (mField == "Max") {
+        return(SubsetE %>% mutate(Metric = max(value, na.rm = TRUE)))
+      }
+      if (mField == "Min") {
+        return(SubsetE %>% mutate(Metric = min(value, na.rm = TRUE)))
+      }
+      if (mField == "Largest") {
+        return(SubsetE %>% mutate(Metric = if (all(is.na(sample_size))) NA_real_ else value[which.max(sample_size)]))
+      }
+      if (mField == "Latest") {
+        return(SubsetE %>% mutate(Metric = if (all(is.na(end_year))) NA_real_ else value[which.max(end_year)]))
+      }
+      if (mField == "Median") {
+        return(SubsetE %>% mutate(Metric = median(value, na.rm = TRUE)))
+      }
+      if (mField == "Mean") {
+        return(SubsetE %>% mutate(Metric = mean(value, na.rm = TRUE)))
+      }
+      if (mField == "Wmean") {
+        return(SubsetE %>%
+          mutate(Metric = tryCatch({
+            metric_data <- cur_data() %>%
+              filter(!is.na(count)) %>%
+              filter(!is.na(sample_size)) %>%
+              filter(count != 0)
 
-          if (nrow(metric_data) == 0) {
-            NA_real_
-          } else {
-            Model <- rma(
-              yi,
-              vi,
-              data = escalc(xi = count, ni = sample_size, data = metric_data, measure = "PFT", add = 0),
-              method = "REML",
-              level = 95
-            )
-            (sin(predict(Model)$pred / 2))^2 * 100
-          }
-        }, error = function(e) NA_real_))
-    }
+            if (nrow(metric_data) == 0) {
+              NA_real_
+            } else {
+              Model <- rma(
+                yi,
+                vi,
+                data = escalc(xi = count, ni = sample_size, data = metric_data, measure = "PFT", add = 0),
+                method = "REML",
+                level = 95
+              )
+              (sin(predict(Model)$pred / 2))^2 * 100
+            }
+          }, error = function(e) NA_real_)))
+      }
+      SubsetE
+    })
 
-    SubsetE <- SubsetE %>%
-      ungroup() %>%
-      dplyr::select(all_of(Names), Metric) %>%
-      filter(!is.na(Metric)) %>%
-      mutate(Metric = round(Metric, 2))
+    SubsetE <- timed_call(timing_env, "metric_finalize", function() {
+      SubsetE %>%
+        ungroup() %>%
+        dplyr::select(all_of(Names), Metric) %>%
+        filter(!is.na(Metric)) %>%
+        mutate(Metric = round(Metric, 2))
+    })
 
-    # --- Add geometries (cached spatial files) ---
-    if (agg_level == "Country-level") {
-      SubsetE <- SubsetE %>%
-        left_join(adm0_sel %>% st_as_sf(), by = "geo_admin0") %>%
-        left_join(adm1_sel %>% st_drop_geometry(), by = "geo_admin1") %>%
-        left_join(adm2_sel %>% st_drop_geometry(), by = "geo_admin2")
-    } else if (agg_level == "Province-level") {
-      SubsetE <- SubsetE %>%
-        left_join(adm1_sel %>% st_as_sf(), by = "geo_admin1") %>%
-        left_join(adm0_sel %>% st_drop_geometry(), by = "geo_admin0") %>%
-        left_join(adm2_sel %>% st_drop_geometry(), by = "geo_admin2")
-    } else {
-      SubsetE <- SubsetE %>%
-        left_join(adm2_sel %>% st_as_sf(), by = "geo_admin2") %>%
-        left_join(adm0_sel %>% st_drop_geometry(), by = "geo_admin0") %>%
-        left_join(adm1_sel %>% st_drop_geometry(), by = "geo_admin1")
-    }
-    SubsetE <- SubsetE %>%
-      dplyr::select(-geoboundary_key) %>%
-      mutate(
-        Region1 = ifelse(is.na(Region1), "Not applicable", Region1),
-        Region2 = ifelse(is.na(Region2), "Not applicable", Region2)
-      ) %>%
-      distinct()
-    SubsetG <- SubsetE %>%
-      dplyr::select(Metric, Region, Region1, Region2, geom) %>%
-      distinct()
+    SubsetE <- timed_call(timing_env, "geometry_finalize", function() {
+      idx0 <- match(SubsetE$geo_admin0, adm0_lookup$geo_admin0)
+      idx1 <- match(SubsetE$geo_admin1, adm1_lookup$geo_admin1)
+      idx2 <- match(SubsetE$geo_admin2, adm2_lookup$geo_admin2)
+
+      SubsetE %>%
+        mutate(
+          Region = adm0_lookup$Region[idx0],
+          Region1 = ifelse(is.na(adm1_lookup$Region1[idx1]), "Not applicable", adm1_lookup$Region1[idx1]),
+          Region2 = ifelse(is.na(adm2_lookup$Region2[idx2]), "Not applicable", adm2_lookup$Region2[idx2])
+        )
+    })
+
+    polygon_keys <- timed_call(timing_env, "polygon_subset", function() {
+      if (agg_level == "Country-level") {
+        SubsetE %>% dplyr::select(geo_admin0, Metric) %>% distinct()
+      } else if (agg_level == "Province-level") {
+        SubsetE %>% dplyr::select(geo_admin0, geo_admin1, Metric) %>% distinct()
+      } else {
+        SubsetE %>% dplyr::select(geo_admin0, geo_admin1, geo_admin2, Metric) %>% distinct()
+      }
+    })
+
+    SubsetG <- timed_call(timing_env, "geometry_join", function() {
+      if (agg_level == "Country-level") {
+        idx0 <- match(polygon_keys$geo_admin0, adm0_sel$geo_admin0)
+        st_as_sf(
+          polygon_keys %>% mutate(
+            Region = adm0_lookup$Region[idx0],
+            Region1 = "Not applicable",
+            Region2 = "Not applicable",
+            geom = st_geometry(adm0_sel)[idx0]
+          ),
+          sf_column_name = "geom"
+        )
+      } else if (agg_level == "Province-level") {
+        idx0 <- match(polygon_keys$geo_admin0, adm0_lookup$geo_admin0)
+        idx1 <- match(polygon_keys$geo_admin1, adm1_sel$geo_admin1)
+        st_as_sf(
+          polygon_keys %>% mutate(
+            Region = adm0_lookup$Region[idx0],
+            Region1 = adm1_lookup$Region1[idx1],
+            Region2 = "Not applicable",
+            geom = st_geometry(adm1_sel)[idx1]
+          ),
+          sf_column_name = "geom"
+        )
+      } else {
+        idx0 <- match(polygon_keys$geo_admin0, adm0_lookup$geo_admin0)
+        idx1 <- match(polygon_keys$geo_admin1, adm1_lookup$geo_admin1)
+        idx2 <- match(polygon_keys$geo_admin2, adm2_sel$geo_admin2)
+        st_as_sf(
+          polygon_keys %>% mutate(
+            Region = adm0_lookup$Region[idx0],
+            Region1 = adm1_lookup$Region1[idx1],
+            Region2 = adm2_lookup$Region2[idx2],
+            geom = st_geometry(adm2_sel)[idx2]
+          ),
+          sf_column_name = "geom"
+        )
+      }
+    })
   }
 
-  list(SubsetE = SubsetE, SubsetG = SubsetG, MetricN = MetricN)
+  timing_env[["total_query_bundle"]] <- round(proc.time()[["elapsed"]] - total_start, 3)
+
+  list(SubsetE = SubsetE, SubsetG = SubsetG, MetricN = MetricN, timings = timing_list(timing_env))
 }
 
 build_query_bundle_cached <- function(raw_qs) {
   cache_key <- normalize_query_string(raw_qs)
 
   if (exists(cache_key, envir = query_bundle_cache, inherits = FALSE)) {
-    return(get(cache_key, envir = query_bundle_cache, inherits = FALSE))
+    bundle <- get(cache_key, envir = query_bundle_cache, inherits = FALSE)
+    bundle$timings$cache_hit <- TRUE
+    bundle$timings$cache_lookup <- 0
+    return(bundle)
   }
 
+  cache_start <- proc.time()[["elapsed"]]
   bundle <- build_query_bundle(raw_qs)
 
-  # Leaflet polygon layers require sf/spatial input. Ensure cached payload
-  # preserves sf class even if upstream dplyr ops returned a tibble.
-  if (!is.null(bundle$SubsetE) && !inherits(bundle$SubsetE, "sf") && "geom" %in% names(bundle$SubsetE)) {
-    bundle$SubsetE <- st_as_sf(bundle$SubsetE)
-  }
+  # Leaflet polygon layers require sf/spatial input. Ensure the aggregated
+  # polygon payload preserves sf class before caching.
   if (!is.null(bundle$SubsetG) && !inherits(bundle$SubsetG, "sf") && "geom" %in% names(bundle$SubsetG)) {
     bundle$SubsetG <- st_as_sf(bundle$SubsetG)
   }
+
+  bundle$timings$cache_hit <- FALSE
+  bundle$timings$cache_lookup <- round(proc.time()[["elapsed"]] - cache_start, 3)
 
   assign(cache_key, bundle, envir = query_bundle_cache)
   bundle
@@ -716,9 +822,13 @@ ui <- fluidPage(theme = bs_theme(version = 5, bootswatch = "litera"),
                                  .dataTables_wrapper .dataTables_length select,
                                  table.dataTable thead .form-control {font-size: 0.75rem; padding: 2px 4px; height: 1.5rem; line-height: 1; border-radius: 0.2rem;}
                                  
-                                 .dataTables_wrapper .dataTables_paginate ul.pagination li.page-item .page-link {font-size: 0.7rem !important; padding: 0.05rem 0.3rem !important; min-width: 1.1rem !important; height: 1.2rem !important;}")),
+                                 .dataTables_wrapper .dataTables_paginate ul.pagination li.page-item .page-link {font-size: 0.7rem !important; padding: 0.05rem 0.3rem !important; min-width: 1.1rem !important; height: 1.2rem !important;}
+                                 .perf-panel {font-size: 0.82rem; margin-bottom: 1rem;}
+                                 .perf-panel table {margin-bottom: 0;}
+                                 .perf-panel td, .perf-panel th {padding: 0.25rem 0.5rem;}")),
                 
                 uiOutput("no_data_notification"),
+                uiOutput("timing_panel"),
                 
                 div(class = "container-fluid py-4 px-4",
                     ## MAP AND SIDEBAR (LEFT = POPUP, RIGHT = MAP)
@@ -742,6 +852,7 @@ ui <- fluidPage(theme = bs_theme(version = 5, bootswatch = "litera"),
 
 
 server <- function(input, output, session) {
+  perf_state <- reactiveValues(map_render_secs = NULL, table_render_secs = NULL)
 
   # Parse URL query string once per session
   query_bundle <- reactive({
@@ -750,12 +861,7 @@ server <- function(input, output, session) {
   })
 
   SubsetE_r <- reactive({
-    b <- query_bundle()
-    if (!is.null(b$SubsetE) && !inherits(b$SubsetE, "sf") && "geom" %in% names(b$SubsetE)) {
-      st_as_sf(b$SubsetE)
-    } else {
-      b$SubsetE
-    }
+    query_bundle()$SubsetE
   })
   SubsetG_r <- reactive({
     b <- query_bundle()
@@ -766,6 +872,7 @@ server <- function(input, output, session) {
     }
   })
   MetricN_r <- reactive({ query_bundle()$MetricN })
+  timing_info_r <- reactive({ query_bundle()$timings %||% list() })
 
   data_available <- reactive({
     se <- SubsetE_r()
@@ -799,12 +906,12 @@ observe({req(selected_row())
 
   popup_contentA_r <- reactive({
     req(data_available())
-    SubsetE <- SubsetE_r(); SubsetG <- SubsetG_r()
+    SubsetG <- SubsetG_r()
     lapply(1:nrow(SubsetG), function(i) {
       fields <- c("Country", "Province", "District", "Value")
-      values <- c(if (i <= nrow(SubsetE)) SubsetE$Region[i] else NA,
-                  if (i <= nrow(SubsetE)) SubsetE$Region1[i] else NA,
-                  if (i <= nrow(SubsetE)) SubsetE$Region2[i] else NA,
+      values <- c(SubsetG$Region[i],
+                  SubsetG$Region1[i],
+                  SubsetG$Region2[i],
                   SubsetG$Metric[i])
       if (length(values) == 0) {df <- data.frame(Field = character(), Value = character())}
       else {df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
@@ -860,13 +967,14 @@ observe({req(selected_row())
   })
 
 output$map <- renderLeaflet({req(data_available())
+  render_start <- proc.time()[["elapsed"]]
   SubsetG   <- SubsetG_r()
   MetricN   <- MetricN_r()
   pal_metric <- pal_metric_r()
   metric_values <- SubsetG$Metric
   data <- filtered_data()
   
-  leaflet(data) %>%
+  map_widget <- leaflet(data) %>%
     addProviderTiles("CartoDB.Positron") %>%
     addScaleBar(position = "bottomleft") %>%
     addCircleMarkers(lat = ~as.numeric(latitude),
@@ -907,11 +1015,16 @@ output$map <- renderLeaflet({req(data_available())
                                                                                      map.on('layeradd', function(e) {var layer = e.layer; if (layer.getChildCount && layer._icon) {var count = layer.getChildCount(); var color = 'black'; var icon = L.divIcon({html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>', className: '', iconSize: new L.Point(20, 20)}); layer.setIcon(icon);}});
                                                                                      
                                                                                      // Highlight on hover
-                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'white', fillColor: 'black'});});}});}")})
+                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'white', fillColor: 'black'});});}});}")
+
+  perf_state$map_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+  map_widget
+})
 
 output$data_table <- renderDT({req(data_available())
+  render_start <- proc.time()[["elapsed"]]
   SubsetE <- SubsetE_r()
-  df <- st_drop_geometry(SubsetE) %>%
+  df <- SubsetE %>%
     rename("Country" = Region,
            "Province" = Region1,
            "District" = Region2,
@@ -940,46 +1053,16 @@ output$data_table <- renderDT({req(data_available())
                   "Study period", "Risk of bias", "Globin phenotype", "IthaID", "Sample size", 
                   "Population tested positive", "Value", "Cohort", "Nationality", "Ethnicity", 
                   "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source")
-  
-  df2 <- SubsetE %>%
-    st_as_sf() %>%
-    rename("Country" = Region,
-           "Province" = Region1,
-           "District" = Region2,
-           "Recruitment site" = recruitment_site,
-           "Latitude" = latitude,              
-           "Longitude" = longitude,
-           "Study period" = timeframe, 
-           "Risk of bias" = bias_flag,          
-           "Globin phenotype" = globin_phenotype, 
-           "IthaID" = ithaID,
-           "Sample size" = sample_size, 
-           "Population tested positive" = count, 
-           "Value" = value, 
-           "Cohort" = status_group,
-           "Nationality" = nationality,
-           "Ethnicity" = ethnicity_name, 
-           "Race" = race,
-           "Religion" = religion_name,
-           "Sex" = sex, 
-           "Age" = age, 
-           "Consanguinity" = consaguinity,
-           "Diagnostic method" = diagnostic_method,  
-           "Notes" = note,
-           "Source" =citation_str) %>%
-    dplyr::select("Country", "Province", "District", "Recruitment site", "Latitude", "Longitude", 
-                  "Study period", "Risk of bias", "Globin phenotype", "IthaID", "Sample size", 
-                  "Population tested positive", "Value", "Cohort", "Nationality", "Ethnicity", 
-                  "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source")
-  
-  datatable(df,
+  table_widget <- datatable(df,
             selection = "single",
             filter = 'top',
             options = list(pageLength = 25,
                            scrollX = TRUE,
                            rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
                            columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))),
-            class = 'stripe hover cell-border')})
+            class = 'stripe hover cell-border')
+  perf_state$table_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+  table_widget})
 
 output$download_png <- downloadHandler(filename = function() {paste0("IthaMaps_", Sys.Date(), ".png")},
                                        content = function(file) {
@@ -1007,7 +1090,7 @@ output$download_csv <- downloadHandler(filename = function() {paste0("IthaMaps_"
                                          Notification <- showNotification("Export as .csv in progress... Please wait until export completes before adjusting filter options.",
                                                                           type = "message", duration = NULL)
                                          SubsetE <- SubsetE_r()
-                                         df <- st_drop_geometry(SubsetE) %>%
+                                         df <- SubsetE %>%
                                            rename("Country" = Region, "Province" = Region1, "District" = Region2,
                                                   "Recruitment site" = recruitment_site, "Latitude" = latitude,
                                                   "Longitude" = longitude, "Study period" = timeframe,
@@ -1035,7 +1118,7 @@ output$download_geojson <- downloadHandler(filename = function() {paste0("IthaMa
                                              Notification <- showNotification("Export as .geojson in progress... Please wait until export completes before adjusting filter options.",
                                                                               type = "message", duration = NULL)
                                              SubsetE <- SubsetE_r()
-                                             df <- st_drop_geometry(SubsetE) %>%
+                                             df <- SubsetE %>%
                                                rename("Country" = Region, "Province" = Region1, "District" = Region2,
                                                       "Recruitment site" = recruitment_site, "Latitude" = latitude,
                                                       "Longitude" = longitude, "Study period" = timeframe,
@@ -1055,7 +1138,9 @@ output$download_geojson <- downloadHandler(filename = function() {paste0("IthaMa
                                                              "Nationality", "Ethnicity", "Race", "Religion",
                                                              "Sex", "Age", "Consanguinity", "Diagnostic method",
                                                              "Notes", "Source")
-                                             st_write(df, file, driver = "GeoJSON", delete_dsn = TRUE)
+                                             sf_df <- entries_to_point_sf(df)
+                                             if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
+                                             st_write(sf_df, file, driver = "GeoJSON", delete_dsn = TRUE)
                                              removeNotification(Notification)})
 
 output$download_gpkg <- downloadHandler(filename = function() {paste0("IthaMaps_", Sys.Date(), ".gpkg")},
@@ -1064,7 +1149,6 @@ output$download_gpkg <- downloadHandler(filename = function() {paste0("IthaMaps_
                                                                            type = "message", duration = NULL)
                                           SubsetE <- SubsetE_r()
                                           df <- SubsetE %>%
-                                            st_as_sf() %>%
                                             rename("Country" = Region, "Province" = Region1, "District" = Region2,
                                                    "Recruitment site" = recruitment_site, "Latitude" = latitude,
                                                    "Longitude" = longitude, "Study period" = timeframe,
@@ -1084,15 +1168,19 @@ output$download_gpkg <- downloadHandler(filename = function() {paste0("IthaMaps_
                                                           "Nationality", "Ethnicity", "Race", "Religion",
                                                           "Sex", "Age", "Consanguinity", "Diagnostic method",
                                                           "Notes", "Source")
-                                          st_write(df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
+                                          sf_df <- entries_to_point_sf(df)
+                                          if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
+                                          st_write(sf_df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
                                           removeNotification(Notification)})
 
 observeEvent(input$map_marker_click, {req(data_available())
   click <- input$map_marker_click
   SubsetE <- SubsetE_r()
   if (!is.null(click)) {
-    clicked_point <- st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetE))
-    dists <- st_distance(clicked_point, SubsetE)
+    lng <- suppressWarnings(as.numeric(SubsetE$longitude))
+    lat <- suppressWarnings(as.numeric(SubsetE$latitude))
+    dists <- (lng - click$lng)^2 + (lat - click$lat)^2
+    dists[is.na(dists)] <- Inf
     nearest_idx <- which.min(dists)
     popup_content <- popup_content_r()
     output$custom_popup <- renderUI({popup_content[[nearest_idx]]})}})
@@ -1106,6 +1194,45 @@ observeEvent(input$map_shape_click, {req(data_available())
     nearest_idx <- which.min(dists)
     popup_contentA <- popup_contentA_r()
     output$custom_popup <- renderUI({popup_contentA[[nearest_idx]]})}})
+
+output$timing_panel <- renderUI({
+  timings <- timing_info_r()
+  if (length(timings) == 0) {
+    return(NULL)
+  }
+
+  timing_rows <- c(
+    "Cache hit" = if (isTRUE(timings$cache_hit)) "yes" else "no",
+    "Cache lookup" = if (!is.null(timings$cache_lookup)) sprintf("%.3fs", timings$cache_lookup) else NA_character_,
+    "Parse + extract" = if (!is.null(timings$parse_extract)) sprintf("%.3fs", timings$parse_extract) else NA_character_,
+    "Resolution filter" = if (!is.null(timings$resolution_filter)) sprintf("%.3fs", timings$resolution_filter) else NA_character_,
+    "Parameter filter" = if (!is.null(timings$parameter_filter)) sprintf("%.3fs", timings$parameter_filter) else NA_character_,
+    "Group prepare" = if (!is.null(timings$group_prepare)) sprintf("%.3fs", timings$group_prepare) else NA_character_,
+    "Metric compute" = if (!is.null(timings$metric_compute)) sprintf("%.3fs", timings$metric_compute) else NA_character_,
+    "Metric finalize" = if (!is.null(timings$metric_finalize)) sprintf("%.3fs", timings$metric_finalize) else NA_character_,
+    "Geometry join" = if (!is.null(timings$geometry_join)) sprintf("%.3fs", timings$geometry_join) else NA_character_,
+    "Geometry finalize" = if (!is.null(timings$geometry_finalize)) sprintf("%.3fs", timings$geometry_finalize) else NA_character_,
+    "Polygon subset" = if (!is.null(timings$polygon_subset)) sprintf("%.3fs", timings$polygon_subset) else NA_character_,
+    "Query bundle total" = if (!is.null(timings$total_query_bundle)) sprintf("%.3fs", timings$total_query_bundle) else NA_character_,
+    "Map render" = if (!is.null(perf_state$map_render_secs)) sprintf("%.3fs", perf_state$map_render_secs) else NA_character_,
+    "Table render" = if (!is.null(perf_state$table_render_secs)) sprintf("%.3fs", perf_state$table_render_secs) else NA_character_
+  )
+
+  timing_rows <- timing_rows[!is.na(timing_rows)]
+
+  div(
+    class = "alert alert-secondary perf-panel",
+    strong("Performance timings"),
+    tags$table(
+      class = "table table-sm table-borderless",
+      tags$tbody(
+        lapply(names(timing_rows), function(label) {
+          tags$tr(tags$th(label), tags$td(timing_rows[[label]]))
+        })
+      )
+    )
+  )
+})
 
 output$no_data_notification <- renderUI({if (!data_available()) {div(class = "alert alert-warning", "No data is available for the selected parameter combination.")}})}
 
