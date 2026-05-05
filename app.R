@@ -402,7 +402,7 @@ db_hcp_per_region <- db_hcp_per_region %>%
   ungroup() %>%
   select(
     -start_year, -end_year, -comments, -curated_by, -expert, -source_id, -pmid, -report, -doi, -hc_key,
-    -end_year_assumed, -region_comment, -compensation_comment, -admin0, -admin1, -admin2, -admin3, -hcp_entry_id
+    -end_year_assumed, -region_comment, -compensation_comment, -admin0, -admin1, -admin2, -admin3
   ) %>%
   distinct()
 
@@ -550,14 +550,37 @@ Parse <- function(Query) {
   if (nchar(qs) == 0 || qs == Query) {
     return(Info)
   }
+
+  canonicalize_key <- function(raw_key) {
+    key_lower <- tolower(raw_key)
+    if (key_lower == "country") return("Country")
+    if (key_lower == "resolution") return("Resolution")
+    if (key_lower == "continent") return("Continent")
+    if (key_lower == "parameter") return("Parameter")
+    if (key_lower == "hemoglobinopathyh") return("HemoglobinopathyH")
+    if (key_lower == "hemoglobinopathyc") return("HemoglobinopathyC")
+    if (key_lower == "hemoglobinopathyp") return("HemoglobinopathyP")
+    if (key_lower == "healthcare") return("Healthcare")
+    if (key_lower == "healthcaredetail") return("HealthcareDetail")
+    if (grepl("^healthcares[0-9]+$", key_lower)) {
+      idx <- suppressWarnings(as.integer(sub("^healthcares([0-9]+)$", "\\1", key_lower)))
+      if (!is.na(idx) && idx >= 1 && idx <= 13) {
+        return(paste0("HealthcareS", idx))
+      }
+    }
+    if (key_lower == "globinpheaf") return("GlobinPheAF")
+    if (key_lower == "variantc") return("VariantC")
+    if (key_lower == "globinpheraf") return("GlobinPheRAF")
+    if (key_lower == "ithaid") return("IthaID")
+    if (key_lower == "metric") return("Metric")
+    if (key_lower == "aggregation") return("Aggregation")
+    raw_key
+  }
+
   for (x in strsplit(qs, "&")[[1]]) {
     Item <- strsplit(x, "=")[[1]]
     if (length(Item) == 2) {
-      key <- switch(tolower(Item[1]),
-        "country" = "Country",
-        "resolution" = "Resolution",
-        Item[1]
-      )
+      key <- canonicalize_key(Item[1])
       Info[[key]] <- Item[2]
     }
   }
@@ -566,17 +589,38 @@ Parse <- function(Query) {
 
 Extract <- function(Query) {
   Info <- list()
-  for (x in c(
+
+  parse_int <- function(v) {
+    if (is.null(v)) return(NULL)
+    out <- suppressWarnings(as.integer(v))
+    if (length(out) == 0 || is.na(out[1])) return(NULL)
+    out[1]
+  }
+
+  expected_keys <- c(
     "Resolution", "Continent", "Country", "Parameter",
     "HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP",
-    "Healthcare", "HealthcareS1", "HealthcareS2", "HealthcareS3",
-    "HealthcareS4", "HealthcareS5", "HealthcareS6", "HealthcareS7",
-    "HealthcareS8", "HealthcareS9", "HealthcareS10", "HealthcareS11",
-    "HealthcareS12", "HealthcareS13", "GlobinPheAF", "VariantC",
+    "Healthcare", "GlobinPheAF", "VariantC",
     "GlobinPheRAF", "IthaID", "Metric", "Aggregation"
-  )) {
-    if (!is.null(Query[[x]])) Info[[x]] <- as.integer(Query[[x]])
+  )
+  expected_keys <- c(expected_keys, paste0("HealthcareS", 1:13))
+
+  for (x in expected_keys) {
+    parsed <- parse_int(Query[[x]])
+    if (!is.null(parsed)) Info[[x]] <- parsed
   }
+
+  # Backward-compatible fallback: if HealthcareDetail is provided,
+  # map it to the expected HealthcareS<Healthcare> key.
+  healthcare_detail <- parse_int(Query[["HealthcareDetail"]])
+  healthcare_parent <- parse_int(Info[["Healthcare"]])
+  if (!is.null(healthcare_detail) && !is.null(healthcare_parent) && healthcare_parent >= 1 && healthcare_parent <= 13) {
+    subkey <- paste0("HealthcareS", healthcare_parent)
+    if (is.null(Info[[subkey]])) {
+      Info[[subkey]] <- healthcare_detail
+    }
+  }
+
   Info
 }
 
@@ -953,7 +997,7 @@ build_query_bundle <- function(raw_qs) {
 
   timing_env[["total_query_bundle"]] <- round(proc.time()[["elapsed"]] - total_start, 3)
 
-  list(SubsetE = SubsetE, SubsetG = SubsetG, MetricN = MetricN, timings = timing_list(timing_env))
+  list(SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, timings = timing_list(timing_env))
 }
 
 build_query_bundle_cached <- function(raw_qs) {
@@ -1053,6 +1097,13 @@ server <- function(input, output, session) {
   SubsetE_r <- reactive({
     query_bundle()$SubsetE
   })
+  SubsetHCP_r <- reactive({
+    query_bundle()$SubsetHCP
+  })
+  is_hcp_mode <- reactive({
+    hcp <- SubsetHCP_r()
+    !is.null(hcp) && nrow(hcp) > 0
+  })
   SubsetG_r <- reactive({
     b <- query_bundle()
     if (!is.null(b$SubsetG) && !inherits(b$SubsetG, "sf") && "geom" %in% names(b$SubsetG)) {
@@ -1070,13 +1121,19 @@ server <- function(input, output, session) {
 
   data_available <- reactive({
     se <- SubsetE_r()
-    !is.null(se) && nrow(se) > 0
+    hcp <- SubsetHCP_r()
+    (!is.null(se) && nrow(se) > 0) || (!is.null(hcp) && nrow(hcp) > 0)
   })
 
   filtered_data <- reactive({
     req(data_available())
-    SubsetE <- SubsetE_r()
-    if (!is.null(input$data_table_rows_all)) SubsetE[input$data_table_rows_all, ] else SubsetE
+    if (is_hcp_mode()) {
+      SubsetHCP <- SubsetHCP_r()
+      if (!is.null(input$data_table_rows_all)) SubsetHCP[input$data_table_rows_all, ] else SubsetHCP
+    } else {
+      SubsetE <- SubsetE_r()
+      if (!is.null(input$data_table_rows_all)) SubsetE[input$data_table_rows_all, ] else SubsetE
+    }
   })
 
   selected_row <- reactiveVal(NULL)
@@ -1109,6 +1166,7 @@ server <- function(input, output, session) {
   popup_contentA_r <- reactive({
     req(data_available())
     SubsetG <- SubsetG_r()
+    if (is.null(SubsetG)) return(list())
     lapply(1:nrow(SubsetG), function(i) {
       fields <- c("Country", "Province", "District", "Value")
       values <- c(
@@ -1145,8 +1203,45 @@ server <- function(input, output, session) {
 
   popup_content_r <- reactive({
     req(data_available())
-    SubsetE <- SubsetE_r()
-    lapply(1:nrow(SubsetE), function(i) {
+    if (is_hcp_mode()) {
+      SubsetHCP <- SubsetHCP_r()
+      idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+      country_names <- adm0_lookup$Region[idx0]
+      lapply(seq_len(nrow(SubsetHCP)), function(i) {
+        fields <- c("Country", "Study period", "Eligibility", "Eligibility comment",
+                    "Implementation", "Diagnostic method", "Uptake",
+                    "Recruitment site", "Notes", "Source")
+        values <- c(
+          country_names[i],
+          SubsetHCP$timeframe[i],
+          SubsetHCP$eligibility[i],
+          SubsetHCP$eligibility_comment[i],
+          SubsetHCP$implementation[i],
+          SubsetHCP$diagnostic_method[i],
+          SubsetHCP$uptake[i],
+          SubsetHCP$recruitment_site[i],
+          SubsetHCP$note[i],
+          SubsetHCP$citation_str[i]
+        )
+        df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
+        df <- df[df$Value != "" & !is.na(df$Value) & df$Value != "Unspecified" & df$Value != "Not applicable", ]
+        table_html <- paste0(
+          "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
+          "<h4 style='margin-bottom:6px;'>Healthcare policy details</h4>",
+          "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
+          paste(apply(df, 1, function(row) {
+            sprintf(
+              "<tr><td style='padding:2px 4px; background:#f9f9f9; color:#333; font-weight:600; width:35%%; white-space:nowrap; border: 1px solid #ddd;'>%s</td><td style='padding:2px 4px; background:#fff; color:#000; border: 1px solid #ddd;'>%s</td></tr>",
+              row[1], row[2]
+            )
+          }), collapse = ""),
+          "</table></div>"
+        )
+        HTML(table_html)
+      })
+    } else {
+      SubsetE <- SubsetE_r()
+      lapply(1:nrow(SubsetE), function(i) {
       fields <- c(
         "Country", "Province", "District", "Value", "Study period", "Risk of bias", "Globin phenotype", "IthaID",
         "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
@@ -1176,11 +1271,13 @@ server <- function(input, output, session) {
         "</table></div>"
       )
       HTML(table_html)
-    })
+      })
+    }
   })
 
   pal_metric_r <- reactive({
     req(data_available())
+    if (is_hcp_mode()) return(NULL)
     SubsetG <- SubsetG_r()
     viridis_palette <- viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1)
     metric_values <- SubsetG$Metric
@@ -1195,6 +1292,43 @@ server <- function(input, output, session) {
   output$map <- renderLeaflet({
     req(data_available())
     render_start <- proc.time()[["elapsed"]]
+
+    if (is_hcp_mode()) {
+      data <- SubsetHCP_r()
+      map_widget <- leaflet() %>%
+        addProviderTiles("CartoDB.Positron") %>%
+        addScaleBar(position = "bottomleft") %>%
+        addCircleMarkers(
+          data = data,
+          lat = ~ as.numeric(latitude),
+          lng = ~ as.numeric(longitude),
+          stroke = TRUE,
+          color = "white",
+          weight = 1,
+          fillColor = "steelblue",
+          fillOpacity = 1,
+          radius = 7,
+          clusterOptions = markerClusterOptions(
+            spiderfyDistanceMultiplier = 1,
+            animate = TRUE,
+            animateAddingMarkers = TRUE,
+            spiderfyOnMaxZoom = TRUE,
+            zoomToBoundsOnClick = TRUE,
+            showCoverageOnHover = TRUE,
+            maxClusterRadius = 4
+          )
+        ) %>%
+        htmlwidgets::onRender("function(el, x) {var map = this;
+
+                                                                                     // Style clusters
+                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer.getChildCount && layer._icon) {var count = layer.getChildCount(); var color = 'black'; var icon = L.divIcon({html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>', className: '', iconSize: new L.Point(20, 20)}); layer.setIcon(icon);}});
+
+                                                                                     // Highlight on hover
+                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'steelblue', fillColor: 'steelblue'});});}});}")
+      perf_state$map_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+      return(map_widget)
+    }
+
     SubsetG <- SubsetG_r()
     MetricN <- MetricN_r()
     pal_metric <- pal_metric_r()
@@ -1261,6 +1395,44 @@ server <- function(input, output, session) {
   output$data_table <- renderDT({
     req(data_available())
     render_start <- proc.time()[["elapsed"]]
+
+    if (is_hcp_mode()) {
+      SubsetHCP <- SubsetHCP_r()
+      idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+      df <- SubsetHCP %>%
+        mutate(Country = adm0_lookup$Region[idx0]) %>%
+        dplyr::select(any_of(c(
+          "hcp_entry_id", "Country", "timeframe", "eligibility", "eligibility_comment",
+          "implementation", "diagnostic_method", "uptake",
+          "recruitment_site", "note", "citation_str"
+        ))) %>%
+        dplyr::rename(any_of(c(
+          "HCP Entry ID" = "hcp_entry_id",
+          "Study period" = "timeframe",
+          "Eligibility" = "eligibility",
+          "Eligibility comment" = "eligibility_comment",
+          "Implementation" = "implementation",
+          "Diagnostic method" = "diagnostic_method",
+          "Uptake" = "uptake",
+          "Recruitment site" = "recruitment_site",
+          "Notes" = "note",
+          "Source" = "citation_str"
+        )))
+      table_widget <- datatable(df,
+        selection = "single",
+        filter = "top",
+        options = list(
+          pageLength = 25,
+          scrollX = TRUE,
+          rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
+          columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
+        ),
+        class = "stripe hover cell-border"
+      )
+      perf_state$table_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+      return(table_widget)
+    }
+
     SubsetE <- SubsetE_r()
     df <- SubsetE %>%
       rename(
@@ -1315,6 +1487,10 @@ server <- function(input, output, session) {
       paste0("IthaMaps_", Sys.Date(), ".png")
     },
     content = function(file) {
+      if (is_hcp_mode()) {
+        showNotification("PNG export is not available for Healthcare availability data.", type = "warning", duration = 4)
+        return(invisible(NULL))
+      }
       Notification <- showNotification("Export as .png in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
@@ -1351,6 +1527,28 @@ server <- function(input, output, session) {
       Notification <- showNotification("Export as .csv in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
+      if (is_hcp_mode()) {
+        SubsetHCP <- SubsetHCP_r()
+        idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+        df <- SubsetHCP %>%
+          mutate(Country = adm0_lookup$Region[idx0]) %>%
+          dplyr::select(any_of(c(
+            "Country", "timeframe", "eligibility", "eligibility_comment",
+            "implementation", "diagnostic_method", "uptake",
+            "recruitment_site", "note", "citation_str"
+          ))) %>%
+          dplyr::rename(any_of(c(
+            "Study period" = "timeframe", "Eligibility" = "eligibility",
+            "Eligibility comment" = "eligibility_comment",
+            "Implementation" = "implementation",
+            "Diagnostic method" = "diagnostic_method", "Uptake" = "uptake",
+            "Recruitment site" = "recruitment_site",
+            "Notes" = "note", "Source" = "citation_str"
+          )))
+        write.csv(df, file, row.names = FALSE)
+        removeNotification(Notification)
+        return(invisible(NULL))
+      }
       SubsetE <- SubsetE_r()
       df <- SubsetE %>%
         rename(
@@ -1386,6 +1584,10 @@ server <- function(input, output, session) {
       paste0("IthaMaps_", Sys.Date(), ".geojson")
     },
     content = function(file) {
+      if (is_hcp_mode()) {
+        showNotification("GeoJSON export is not available for Healthcare availability data.", type = "warning", duration = 4)
+        return(invisible(NULL))
+      }
       Notification <- showNotification("Export as .geojson in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
@@ -1426,6 +1628,10 @@ server <- function(input, output, session) {
       paste0("IthaMaps_", Sys.Date(), ".gpkg")
     },
     content = function(file) {
+      if (is_hcp_mode()) {
+        showNotification("GPKG export is not available for Healthcare availability data.", type = "warning", duration = 4)
+        return(invisible(NULL))
+      }
       Notification <- showNotification("Export as .gpkg in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
@@ -1464,10 +1670,10 @@ server <- function(input, output, session) {
   observeEvent(input$map_marker_click, {
     req(data_available())
     click <- input$map_marker_click
-    SubsetE <- SubsetE_r()
+    data <- filtered_data()
     if (!is.null(click)) {
-      lng <- suppressWarnings(as.numeric(SubsetE$longitude))
-      lat <- suppressWarnings(as.numeric(SubsetE$latitude))
+      lng <- suppressWarnings(as.numeric(data$longitude))
+      lat <- suppressWarnings(as.numeric(data$latitude))
       dists <- (lng - click$lng)^2 + (lat - click$lat)^2
       dists[is.na(dists)] <- Inf
       nearest_idx <- which.min(dists)
@@ -1480,9 +1686,10 @@ server <- function(input, output, session) {
 
   observeEvent(input$map_shape_click, {
     req(data_available())
+    if (is_hcp_mode()) return(invisible(NULL))
     click <- input$map_shape_click
     SubsetG <- SubsetG_r()
-    if (!is.null(click)) {
+    if (!is.null(click) && !is.null(SubsetG)) {
       clicked_shape <- st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
       dists <- st_distance(clicked_shape, st_centroid(SubsetG))
       nearest_idx <- which.min(dists)
