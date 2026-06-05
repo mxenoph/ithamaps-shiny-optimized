@@ -8,9 +8,8 @@ library(stringr)
 library(metafor)
 library(leaflet)
 library(viridis)
-library(mapview)
 library(RMariaDB)
-library(webshot2)
+library(ggplot2)
 
 # ---------------------------------------------------------------------------
 # pick_configuration(): select row from User_Configuration.xlsx
@@ -546,8 +545,14 @@ adm2_lookup <- adm2_sel %>% st_drop_geometry()
 # ---------------------------------------------------------------------------
 Parse <- function(Query) {
   Info <- list()
-  qs <- sub(".*\\?", "", Query)
-  if (nchar(qs) == 0 || qs == Query) {
+  if (is.null(Query) || length(Query) == 0 || is.na(Query[[1]])) {
+    return(Info)
+  }
+
+  Query <- as.character(Query[[1]])
+  Query <- trimws(Query)
+  qs <- sub("^\\?", "", Query)
+  if (nchar(qs) == 0) {
     return(Info)
   }
 
@@ -640,6 +645,7 @@ Search <- function(Item, Identifier, Data) {
 # (Parse, Extract, Search are defined above and used per-session in server)
 
 query_bundle_cache <- new.env(parent = emptyenv())
+query_bundle_cache_version <- "timings_v2"
 
 normalize_query_string <- function(raw_qs) {
   if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
@@ -1001,13 +1007,21 @@ build_query_bundle <- function(raw_qs) {
 }
 
 build_query_bundle_cached <- function(raw_qs) {
-  cache_key <- normalize_query_string(raw_qs)
+  cache_key <- paste(query_bundle_cache_version, normalize_query_string(raw_qs), sep = "::")
+
+  bundle_has_timings <- function(bundle) {
+    is.list(bundle) && is.list(bundle$timings) && length(bundle$timings) > 0
+  }
 
   if (exists(cache_key, envir = query_bundle_cache, inherits = FALSE)) {
     bundle <- get(cache_key, envir = query_bundle_cache, inherits = FALSE)
+    if (!bundle_has_timings(bundle)) {
+      rm(list = cache_key, envir = query_bundle_cache)
+    } else {
     bundle$timings$cache_hit <- TRUE
     bundle$timings$cache_lookup <- 0
     return(bundle)
+    }
   }
 
   cache_start <- proc.time()[["elapsed"]]
@@ -1088,10 +1102,15 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   perf_state <- reactiveValues(map_render_secs = NULL, table_render_secs = NULL)
 
-  # Parse URL query string once per session
+  # Build data bundle from the current URL query string
   query_bundle <- reactive({
-    raw_qs <- isolate(session$clientData$url_search)
-    build_query_bundle_cached(raw_qs)
+    raw_qs <- session$clientData$url_search %||% ""
+    fetch_start <- proc.time()[["elapsed"]]
+    bundle <- build_query_bundle_cached(raw_qs)
+    bundle$timings <- bundle$timings %||% list()
+    bundle$timings$bundle_fetch <- round(proc.time()[["elapsed"]] - fetch_start, 3)
+    bundle$timings$query_string <- normalize_query_string(raw_qs)
+    bundle
   })
 
   SubsetE_r <- reactive({
@@ -1136,11 +1155,136 @@ server <- function(input, output, session) {
     }
   })
 
+  selected_marker_idx <- reactiveVal(NULL)
+  selected_shape_idx <- reactiveVal(NULL)
   selected_row <- reactiveVal(NULL)
+
+  selected_parameters_r <- reactive({
+    raw_qs <- session$clientData$url_search %||% ""
+    Query <- Extract(Parse(raw_qs))
+
+    if (length(Query) == 0) {
+      return(data.frame(Parameter = character(), Selection = character(), stringsAsFactors = FALSE))
+    }
+
+    lookup <- list(
+      Resolution = Resolution, Continent = Continent, Country = Country,
+      Parameter = Parameter, HemoglobinopathyH = HemoglobinopathyH,
+      HemoglobinopathyC = HemoglobinopathyC, HemoglobinopathyP = HemoglobinopathyP,
+      Healthcare = Healthcare,
+      HealthcareS1 = HealthcareS1, HealthcareS2 = HealthcareS2, HealthcareS3 = HealthcareS3,
+      HealthcareS4 = HealthcareS4, HealthcareS5 = HealthcareS5, HealthcareS6 = HealthcareS6,
+      HealthcareS7 = HealthcareS7, HealthcareS8 = HealthcareS8, HealthcareS9 = HealthcareS9,
+      HealthcareS10 = HealthcareS10, HealthcareS11 = HealthcareS11, HealthcareS12 = HealthcareS12,
+      HealthcareS13 = HealthcareS13, GlobinPheAF = GlobinPheAF, VariantC = VariantC,
+      GlobinPheRAF = GlobinPheRAF, IthaID = IthaID, Metric = Metric, Aggregation = Aggregation
+    )
+
+    preferred_order <- c(
+      "Resolution", "Continent", "Country", "Parameter",
+      "HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP",
+      "Healthcare", paste0("HealthcareS", 1:13),
+      "GlobinPheAF", "VariantC", "GlobinPheRAF", "IthaID", "Metric", "Aggregation"
+    )
+    keys <- preferred_order[preferred_order %in% names(Query)]
+    extra_keys <- setdiff(names(Query), keys)
+    keys <- c(keys, extra_keys)
+
+    rows <- lapply(keys, function(key) {
+      id_val <- Query[[key]]
+      selection <- as.character(id_val)
+      if (key %in% names(lookup)) {
+        opt <- suppressWarnings(Search(key, id_val, lookup[[key]]))
+        if (!is.na(opt)[1]) {
+          selection <- as.character(opt[[1]])
+        }
+      }
+      data.frame(Parameter = key, Selection = selection, stringsAsFactors = FALSE)
+    })
+
+    bind_rows(rows)
+  })
+
+  summary_panel_r <- reactive({
+    params_df <- selected_parameters_r()
+
+    get_param_selection <- function(name) {
+      hit <- params_df$Selection[params_df$Parameter == name]
+      if (length(hit) == 0) return(NA_character_)
+      as.character(hit[[1]])
+    }
+
+    before_count <- if (is_hcp_mode()) {
+      hcp <- SubsetHCP_r()
+      if (is.null(hcp)) 0 else nrow(hcp)
+    } else {
+      se <- SubsetE_r()
+      if (is.null(se)) 0 else nrow(se)
+    }
+    after_count <- if (isTRUE(data_available())) nrow(filtered_data()) else 0
+    mode_label <- if (is_hcp_mode()) "Healthcare availability" else "Epidemiology entries"
+
+    summary_df <- bind_rows(
+      data.frame(
+        Parameter = c("Data mode", "Total records", "Shown records"),
+        Selection = c(mode_label, as.character(before_count), as.character(after_count)),
+        stringsAsFactors = FALSE
+      ),
+      params_df
+    )
+
+    metric_table_html <- ""
+    resolution_sel <- get_param_selection("Resolution")
+    aggregation_sel <- get_param_selection("Aggregation")
+    metric_name_sel <- get_param_selection("Metric")
+    if (!is_hcp_mode() && identical(resolution_sel, "Country-level") && identical(aggregation_sel, "Country-level")) {
+      sg <- SubsetG_r()
+      metric_values <- if (is.null(sg) || !("Metric" %in% names(sg))) numeric(0) else as.numeric(sg$Metric)
+      metric_values <- metric_values[!is.na(metric_values)]
+      metric_value_label <- if (length(metric_values) == 0) {
+        "N/A"
+      } else if (length(unique(metric_values)) == 1) {
+        as.character(round(unique(metric_values)[1], 2))
+      } else {
+        paste0("Multiple (", length(unique(metric_values)), ")")
+      }
+      metric_name_label <- if (is.na(metric_name_sel) || !nzchar(metric_name_sel)) "Metric" else metric_name_sel
+      metric_table_html <- paste0(
+        "<h5 style='margin:8px 0 4px 0;'>Metric calculation</h5>",
+        "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
+        "<tr><td style='padding:2px 4px; vertical-align:top; background:#f9f9f9; color:#333; font-weight:600; width:42%; white-space:nowrap; border: 1px solid #ddd;'>Metric</td>",
+        sprintf("<td style='padding:2px 4px; vertical-align:top; background:#ffffff; color:#000; border: 1px solid #ddd;'>%s</td></tr>", metric_name_label),
+        "<tr><td style='padding:2px 4px; vertical-align:top; background:#f9f9f9; color:#333; font-weight:600; width:42%; white-space:nowrap; border: 1px solid #ddd;'>Value</td>",
+        sprintf("<td style='padding:2px 4px; vertical-align:top; background:#ffffff; color:#000; border: 1px solid #ddd;'>%s</td></tr>", metric_value_label),
+        "</table>"
+      )
+    }
+
+    table_html <- paste0(
+      "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
+      "<h4 style='margin-bottom:6px;'>Selected query summary</h4>",
+      "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
+      paste(apply(summary_df, 1, function(row) {
+        sprintf(
+          "<tr><td style='padding:2px 4px; vertical-align:top; background:#f9f9f9; color:#333; font-weight:600; width:42%%; white-space:nowrap; border: 1px solid #ddd;'>%s</td><td style='padding:2px 4px; vertical-align:top; background:#ffffff; color:#000; border: 1px solid #ddd;'>%s</td></tr>",
+          row[1], row[2]
+        )
+      }), collapse = ""),
+      "</table>",
+      metric_table_html,
+      "</div>"
+    )
+    HTML(table_html)
+  })
 
   observeEvent(input$data_table_rows_selected, {
     selected_row(input$data_table_rows_selected)
   })
+
+  observeEvent(filtered_data(), {
+    selected_marker_idx(NULL)
+    selected_shape_idx(NULL)
+  }, ignoreInit = TRUE)
 
   observe({
     req(selected_row())
@@ -1283,9 +1427,20 @@ server <- function(input, output, session) {
     metric_values <- SubsetG$Metric
     unique_vals <- unique(metric_values)
     if (length(unique_vals) == 1) {
-      colorNumeric(palette = viridis_palette, domain = unique_vals)
+      # Expand domain so the legend can render a continuous scale.
+      # Use 0 as lower bound (natural for prevalence/frequency data);
+      # fall back to a unit interval when the single value is itself 0.
+      lower <- if (unique_vals[1] > 0) 0 else -1
+      expanded <- c(lower, unique_vals[1])
+      list(
+        pal         = colorNumeric(palette = viridis_palette, domain = expanded),
+        legend_vals = expanded
+      )
     } else {
-      colorNumeric(palette = viridis_palette, domain = metric_values)
+      list(
+        pal         = colorNumeric(palette = viridis_palette, domain = metric_values),
+        legend_vals = metric_values
+      )
     }
   })
 
@@ -1331,8 +1486,9 @@ server <- function(input, output, session) {
 
     SubsetG <- SubsetG_r()
     MetricN <- MetricN_r()
-    pal_metric <- pal_metric_r()
-    metric_values <- SubsetG$Metric
+    pal_metric_obj <- pal_metric_r()
+    pal_metric <- pal_metric_obj$pal
+    legend_vals <- pal_metric_obj$legend_vals
     data <- filtered_data()
 
     map_widget <- leaflet(data) %>%
@@ -1375,7 +1531,7 @@ server <- function(input, output, session) {
       ) %>%
       addLegend(
         pal = pal_metric,
-        values = metric_values,
+        values = legend_vals,
         title = MetricN,
         opacity = 1,
         position = "bottomright"
@@ -1483,6 +1639,7 @@ server <- function(input, output, session) {
   })
 
   output$download_png <- downloadHandler(
+    contentType = "image/png",
     filename = function() {
       paste0("IthaMaps_", Sys.Date(), ".png")
     },
@@ -1491,31 +1648,63 @@ server <- function(input, output, session) {
         showNotification("PNG export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification <- showNotification("Export as .png in progress... Please wait until export completes before adjusting filter options.",
+      Notification <- showNotification("Export as .png in progress...",
         type = "message", duration = NULL
       )
-      SubsetG <- SubsetG_r()
-      MetricN <- MetricN_r()
-      pal_metric <- pal_metric_r()
-      map <- leaflet(filtered_data()) %>%
-        addProviderTiles("CartoDB.Positron") %>%
-        addPolygons(
-          data = SubsetG,
-          weight = 0.3, opacity = 1, color = "black",
-          fillOpacity = 0.8, smoothFactor = 0.5,
-          fillColor = ~ pal_metric(Metric)
+      on.exit(removeNotification(Notification), add = TRUE)
+
+      SubsetG  <- SubsetG_r()
+      MetricN  <- MetricN_r()
+      pal_metric_obj <- pal_metric_r()
+      legend_vals    <- pal_metric_obj$legend_vals
+      pts <- filtered_data() %>%
+        mutate(
+          longitude = suppressWarnings(as.numeric(longitude)),
+          latitude  = suppressWarnings(as.numeric(latitude))
         ) %>%
-        addCircleMarkers(
-          lat = ~ as.numeric(latitude), lng = ~ as.numeric(longitude),
-          stroke = TRUE, color = "white", weight = 1,
-          fillColor = "black", fillOpacity = 1, radius = 7
-        ) %>%
-        addLegend(
-          pal = pal_metric, values = SubsetG$Metric, title = MetricN,
-          position = "bottomright", opacity = 1
+        filter(!is.na(longitude), !is.na(latitude))
+
+      # Honour the user's current map viewport if available.
+      bounds <- input$map_bounds   # list(north, south, east, west) or NULL
+      xlim <- if (!is.null(bounds)) c(bounds$west,  bounds$east)  else NULL
+      ylim <- if (!is.null(bounds)) c(bounds$south, bounds$north) else NULL
+
+      # Build a continuous viridis fill scale matching the interactive map.
+      fill_scale <- scale_fill_gradientn(
+        colours  = viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1),
+        limits   = range(legend_vals, na.rm = TRUE),
+        na.value = "grey80",
+        name     = MetricN
+      )
+
+      p <- ggplot2::ggplot() +
+        ggplot2::geom_sf(
+          data    = SubsetG,
+          ggplot2::aes(fill = Metric),
+          colour  = "black",
+          linewidth = 0.2,
+          alpha   = 0.8
+        ) +
+        fill_scale +
+        ggplot2::geom_point(
+          data = pts,
+          ggplot2::aes(x = longitude, y = latitude),
+          colour = "black", fill = "black",
+          shape = 21, size = 1.8, stroke = 0.4
+        ) +
+        ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+        ggplot2::theme_minimal(base_size = 11) +
+        ggplot2::theme(
+          panel.grid = ggplot2::element_line(colour = "grey90"),
+          legend.position = "right"
         )
-      mapview::mapshot(map, file = file)
-      removeNotification(Notification)
+
+      tryCatch({
+        ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = "png")
+      }, error = function(e) {
+        showNotification(paste("PNG export failed:", conditionMessage(e)), type = "error", duration = 8)
+        stop(e)
+      })
     }
   )
 
@@ -1592,7 +1781,9 @@ server <- function(input, output, session) {
         type = "message", duration = NULL
       )
       SubsetE <- SubsetE_r()
-      df <- SubsetE %>%
+      sf_df <- entries_to_point_sf(SubsetE)
+      if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
+      sf_df <- sf_df %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -1616,8 +1807,6 @@ server <- function(input, output, session) {
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      sf_df <- entries_to_point_sf(df)
-      if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
       st_write(sf_df, file, driver = "GeoJSON", delete_dsn = TRUE)
       removeNotification(Notification)
     }
@@ -1636,7 +1825,9 @@ server <- function(input, output, session) {
         type = "message", duration = NULL
       )
       SubsetE <- SubsetE_r()
-      df <- SubsetE %>%
+      sf_df <- entries_to_point_sf(SubsetE)
+      if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
+      sf_df <- sf_df %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -1660,8 +1851,6 @@ server <- function(input, output, session) {
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      sf_df <- entries_to_point_sf(df)
-      if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
       st_write(sf_df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
       removeNotification(Notification)
     }
@@ -1677,10 +1866,8 @@ server <- function(input, output, session) {
       dists <- (lng - click$lng)^2 + (lat - click$lat)^2
       dists[is.na(dists)] <- Inf
       nearest_idx <- which.min(dists)
-      popup_content <- popup_content_r()
-      output$custom_popup <- renderUI({
-        popup_content[[nearest_idx]]
-      })
+      selected_marker_idx(nearest_idx)
+      selected_shape_idx(NULL)
     }
   })
 
@@ -1693,22 +1880,54 @@ server <- function(input, output, session) {
       clicked_shape <- st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
       dists <- st_distance(clicked_shape, st_centroid(SubsetG))
       nearest_idx <- which.min(dists)
-      popup_contentA <- popup_contentA_r()
-      output$custom_popup <- renderUI({
-        popup_contentA[[nearest_idx]]
-      })
+      selected_shape_idx(nearest_idx)
+      selected_marker_idx(NULL)
     }
+  })
+
+  output$custom_popup <- renderUI({
+    marker_idx <- selected_marker_idx()
+    shape_idx <- selected_shape_idx()
+
+    if (!is.null(marker_idx)) {
+      popup_content <- popup_content_r()
+      if (marker_idx >= 1 && marker_idx <= length(popup_content)) {
+        return(popup_content[[marker_idx]])
+      }
+    }
+
+    if (!is.null(shape_idx) && !is_hcp_mode()) {
+      popup_contentA <- popup_contentA_r()
+      if (shape_idx >= 1 && shape_idx <= length(popup_contentA)) {
+        return(popup_contentA[[shape_idx]])
+      }
+    }
+
+    summary_panel_r()
   })
 
   output$timing_panel <- renderUI({
     timings <- timing_info_r()
     if (length(timings) == 0) {
-      return(NULL)
+      raw_qs <- session$clientData$url_search %||% ""
+      return(div(
+        class = "alert alert-secondary perf-panel",
+        strong("Performance timings"),
+        tags$p(
+          class = "mb-0",
+          if (nchar(normalize_query_string(raw_qs)) == 0) {
+            "No timing data available yet. The app has not received a URL query string in this session."
+          } else {
+            "No timing data is available for the current query."
+          }
+        )
+      ))
     }
 
     timing_rows <- c(
       "Cache hit" = if (isTRUE(timings$cache_hit)) "yes" else "no",
       "Cache lookup" = if (!is.null(timings$cache_lookup)) sprintf("%.3fs", timings$cache_lookup) else NA_character_,
+      "Bundle fetch" = if (!is.null(timings$bundle_fetch)) sprintf("%.3fs", timings$bundle_fetch) else NA_character_,
       "Parse + extract" = if (!is.null(timings$parse_extract)) sprintf("%.3fs", timings$parse_extract) else NA_character_,
       "Resolution filter" = if (!is.null(timings$resolution_filter)) sprintf("%.3fs", timings$resolution_filter) else NA_character_,
       "Parameter filter" = if (!is.null(timings$parameter_filter)) sprintf("%.3fs", timings$parameter_filter) else NA_character_,
@@ -1728,13 +1947,16 @@ server <- function(input, output, session) {
     div(
       class = "alert alert-secondary perf-panel",
       strong("Performance timings"),
-      tags$table(
-        class = "table table-sm table-borderless",
-        tags$tbody(
-          lapply(names(timing_rows), function(label) {
-            tags$tr(tags$th(label), tags$td(timing_rows[[label]]))
-          })
-        )
+      tags$p(class = "mb-2", sprintf("Timing entries: %d", length(timing_rows))),
+      tags$div(
+        class = "perf-rows",
+        lapply(names(timing_rows), function(label) {
+          tags$div(
+            class = "d-flex justify-content-between align-items-start perf-row",
+            tags$div(class = "perf-label", label),
+            tags$div(class = "perf-value", timing_rows[[label]])
+          )
+        })
       )
     )
   })
