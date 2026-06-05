@@ -558,27 +558,57 @@ Parse <- function(Query) {
 
   canonicalize_key <- function(raw_key) {
     key_lower <- tolower(raw_key)
-    if (key_lower == "country") return("Country")
-    if (key_lower == "resolution") return("Resolution")
-    if (key_lower == "continent") return("Continent")
-    if (key_lower == "parameter") return("Parameter")
-    if (key_lower == "hemoglobinopathyh") return("HemoglobinopathyH")
-    if (key_lower == "hemoglobinopathyc") return("HemoglobinopathyC")
-    if (key_lower == "hemoglobinopathyp") return("HemoglobinopathyP")
-    if (key_lower == "healthcare") return("Healthcare")
-    if (key_lower == "healthcaredetail") return("HealthcareDetail")
+    if (key_lower == "country") {
+      return("Country")
+    }
+    if (key_lower == "resolution") {
+      return("Resolution")
+    }
+    if (key_lower == "continent") {
+      return("Continent")
+    }
+    if (key_lower == "parameter") {
+      return("Parameter")
+    }
+    if (key_lower == "hemoglobinopathyh") {
+      return("HemoglobinopathyH")
+    }
+    if (key_lower == "hemoglobinopathyc") {
+      return("HemoglobinopathyC")
+    }
+    if (key_lower == "hemoglobinopathyp") {
+      return("HemoglobinopathyP")
+    }
+    if (key_lower == "healthcare") {
+      return("Healthcare")
+    }
+    if (key_lower == "healthcaredetail") {
+      return("HealthcareDetail")
+    }
     if (grepl("^healthcares[0-9]+$", key_lower)) {
       idx <- suppressWarnings(as.integer(sub("^healthcares([0-9]+)$", "\\1", key_lower)))
       if (!is.na(idx) && idx >= 1 && idx <= 13) {
         return(paste0("HealthcareS", idx))
       }
     }
-    if (key_lower == "globinpheaf") return("GlobinPheAF")
-    if (key_lower == "variantc") return("VariantC")
-    if (key_lower == "globinpheraf") return("GlobinPheRAF")
-    if (key_lower == "ithaid") return("IthaID")
-    if (key_lower == "metric") return("Metric")
-    if (key_lower == "aggregation") return("Aggregation")
+    if (key_lower == "globinpheaf") {
+      return("GlobinPheAF")
+    }
+    if (key_lower == "variantc") {
+      return("VariantC")
+    }
+    if (key_lower == "globinpheraf") {
+      return("GlobinPheRAF")
+    }
+    if (key_lower == "ithaid") {
+      return("IthaID")
+    }
+    if (key_lower == "metric") {
+      return("Metric")
+    }
+    if (key_lower == "aggregation") {
+      return("Aggregation")
+    }
     raw_key
   }
 
@@ -596,9 +626,13 @@ Extract <- function(Query) {
   Info <- list()
 
   parse_int <- function(v) {
-    if (is.null(v)) return(NULL)
+    if (is.null(v)) {
+      return(NULL)
+    }
     out <- suppressWarnings(as.integer(v))
-    if (length(out) == 0 || is.na(out[1])) return(NULL)
+    if (length(out) == 0 || is.na(out[1])) {
+      return(NULL)
+    }
     out[1]
   }
 
@@ -1018,9 +1052,9 @@ build_query_bundle_cached <- function(raw_qs) {
     if (!bundle_has_timings(bundle)) {
       rm(list = cache_key, envir = query_bundle_cache)
     } else {
-    bundle$timings$cache_hit <- TRUE
-    bundle$timings$cache_lookup <- 0
-    return(bundle)
+      bundle$timings$cache_hit <- TRUE
+      bundle$timings$cache_lookup <- 0
+      return(bundle)
     }
   }
 
@@ -1210,7 +1244,9 @@ server <- function(input, output, session) {
 
     get_param_selection <- function(name) {
       hit <- params_df$Selection[params_df$Parameter == name]
-      if (length(hit) == 0) return(NA_character_)
+      if (length(hit) == 0) {
+        return(NA_character_)
+      }
       as.character(hit[[1]])
     }
 
@@ -1281,10 +1317,13 @@ server <- function(input, output, session) {
     selected_row(input$data_table_rows_selected)
   })
 
-  observeEvent(filtered_data(), {
-    selected_marker_idx(NULL)
-    selected_shape_idx(NULL)
-  }, ignoreInit = TRUE)
+  observeEvent(filtered_data(),
+    {
+      selected_marker_idx(NULL)
+      selected_shape_idx(NULL)
+    },
+    ignoreInit = TRUE
+  )
 
   observe({
     req(selected_row())
@@ -1310,7 +1349,9 @@ server <- function(input, output, session) {
   popup_contentA_r <- reactive({
     req(data_available())
     SubsetG <- SubsetG_r()
-    if (is.null(SubsetG)) return(list())
+    if (is.null(SubsetG)) {
+      return(list())
+    }
     lapply(1:nrow(SubsetG), function(i) {
       fields <- c("Country", "Province", "District", "Value")
       values <- c(
@@ -1352,9 +1393,11 @@ server <- function(input, output, session) {
       idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
       country_names <- adm0_lookup$Region[idx0]
       lapply(seq_len(nrow(SubsetHCP)), function(i) {
-        fields <- c("Country", "Study period", "Eligibility", "Eligibility comment",
-                    "Implementation", "Diagnostic method", "Uptake",
-                    "Recruitment site", "Notes", "Source")
+        fields <- c(
+          "Country", "Study period", "Eligibility", "Eligibility comment",
+          "Implementation", "Diagnostic method", "Uptake",
+          "Recruitment site", "Notes", "Source"
+        )
         values <- c(
           country_names[i],
           SubsetHCP$timeframe[i],
@@ -1386,42 +1429,44 @@ server <- function(input, output, session) {
     } else {
       SubsetE <- SubsetE_r()
       lapply(1:nrow(SubsetE), function(i) {
-      fields <- c(
-        "Country", "Province", "District", "Value", "Study period", "Risk of bias", "Globin phenotype", "IthaID",
-        "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
-        "Sex", "Age", "Consanguinity", "Diagnostic method", "Recruitment site", "Coordinates", "Notes", "Source"
-      )
-      values <- c(
-        SubsetE$Region[i], SubsetE$Region1[i], SubsetE$Region2[i], SubsetE$value[i], SubsetE$timeframe[i],
-        SubsetE$bias_flag[i], SubsetE$globin_phenotype[i], SubsetE$ithaID[i], SubsetE$sample_size[i],
-        SubsetE$count[i], SubsetE$status_group[i], SubsetE$nationality[i], SubsetE$ethnicity_name[i],
-        SubsetE$race[i], SubsetE$religion_name[i], SubsetE$sex[i], SubsetE$age[i], SubsetE$consaguinity[i],
-        SubsetE$diagnostic_method[i], SubsetE$recruitment_site[i],
-        paste0("(", round(as.numeric(SubsetE$latitude[i]), 4), ", ", round(as.numeric(SubsetE$longitude[i]), 4), ")"),
-        SubsetE$note[i], SubsetE$citation_str[i]
-      )
-      df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
-      df <- df[df$Value != "" & !is.na(df$Value), ]
-      table_html <- paste0(
-        "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
-        "<h4 style='margin-bottom:6px;'>Study details</h4>",
-        "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
-        paste(apply(df, 1, function(row) {
-          sprintf(
-            "<tr><td style='padding:2px 4px; background:#f9f9f9; color:#333; font-weight:600; width:35%%; white-space:nowrap; border: 1px solid #ddd;'>%s</td><td style='padding:2px 4px; background:#fff; color:#000; border: 1px solid #ddd;'>%s</td></tr>",
-            row[1], row[2]
-          )
-        }), collapse = ""),
-        "</table></div>"
-      )
-      HTML(table_html)
+        fields <- c(
+          "Country", "Province", "District", "Value", "Study period", "Risk of bias", "Globin phenotype", "IthaID",
+          "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
+          "Sex", "Age", "Consanguinity", "Diagnostic method", "Recruitment site", "Coordinates", "Notes", "Source"
+        )
+        values <- c(
+          SubsetE$Region[i], SubsetE$Region1[i], SubsetE$Region2[i], SubsetE$value[i], SubsetE$timeframe[i],
+          SubsetE$bias_flag[i], SubsetE$globin_phenotype[i], SubsetE$ithaID[i], SubsetE$sample_size[i],
+          SubsetE$count[i], SubsetE$status_group[i], SubsetE$nationality[i], SubsetE$ethnicity_name[i],
+          SubsetE$race[i], SubsetE$religion_name[i], SubsetE$sex[i], SubsetE$age[i], SubsetE$consaguinity[i],
+          SubsetE$diagnostic_method[i], SubsetE$recruitment_site[i],
+          paste0("(", round(as.numeric(SubsetE$latitude[i]), 4), ", ", round(as.numeric(SubsetE$longitude[i]), 4), ")"),
+          SubsetE$note[i], SubsetE$citation_str[i]
+        )
+        df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
+        df <- df[df$Value != "" & !is.na(df$Value), ]
+        table_html <- paste0(
+          "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
+          "<h4 style='margin-bottom:6px;'>Study details</h4>",
+          "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
+          paste(apply(df, 1, function(row) {
+            sprintf(
+              "<tr><td style='padding:2px 4px; background:#f9f9f9; color:#333; font-weight:600; width:35%%; white-space:nowrap; border: 1px solid #ddd;'>%s</td><td style='padding:2px 4px; background:#fff; color:#000; border: 1px solid #ddd;'>%s</td></tr>",
+              row[1], row[2]
+            )
+          }), collapse = ""),
+          "</table></div>"
+        )
+        HTML(table_html)
       })
     }
   })
 
   pal_metric_r <- reactive({
     req(data_available())
-    if (is_hcp_mode()) return(NULL)
+    if (is_hcp_mode()) {
+      return(NULL)
+    }
     SubsetG <- SubsetG_r()
     viridis_palette <- viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1)
     metric_values <- SubsetG$Metric
@@ -1653,10 +1698,10 @@ server <- function(input, output, session) {
       )
       on.exit(removeNotification(Notification), add = TRUE)
 
-      SubsetG  <- SubsetG_r()
-      MetricN  <- MetricN_r()
+      SubsetG <- SubsetG_r()
+      MetricN <- MetricN_r()
       pal_metric_obj <- pal_metric_r()
-      legend_vals    <- pal_metric_obj$legend_vals
+      legend_vals <- pal_metric_obj$legend_vals
       pts <- filtered_data() %>%
         mutate(
           longitude = suppressWarnings(as.numeric(longitude)),
@@ -1665,8 +1710,8 @@ server <- function(input, output, session) {
         filter(!is.na(longitude), !is.na(latitude))
 
       # Honour the user's current map viewport if available.
-      bounds <- input$map_bounds   # list(north, south, east, west) or NULL
-      xlim <- if (!is.null(bounds)) c(bounds$west,  bounds$east)  else NULL
+      bounds <- input$map_bounds # list(north, south, east, west) or NULL
+      xlim <- if (!is.null(bounds)) c(bounds$west, bounds$east) else NULL
       ylim <- if (!is.null(bounds)) c(bounds$south, bounds$north) else NULL
 
       # Build a continuous viridis fill scale matching the interactive map.
@@ -1679,11 +1724,11 @@ server <- function(input, output, session) {
 
       p <- ggplot2::ggplot() +
         ggplot2::geom_sf(
-          data    = SubsetG,
+          data = SubsetG,
           ggplot2::aes(fill = Metric),
-          colour  = "black",
+          colour = "black",
           linewidth = 0.2,
-          alpha   = 0.8
+          alpha = 0.8
         ) +
         fill_scale +
         ggplot2::geom_point(
@@ -1699,12 +1744,15 @@ server <- function(input, output, session) {
           legend.position = "right"
         )
 
-      tryCatch({
-        ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = "png")
-      }, error = function(e) {
-        showNotification(paste("PNG export failed:", conditionMessage(e)), type = "error", duration = 8)
-        stop(e)
-      })
+      tryCatch(
+        {
+          ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = "png")
+        },
+        error = function(e) {
+          showNotification(paste("PNG export failed:", conditionMessage(e)), type = "error", duration = 8)
+          stop(e)
+        }
+      )
     }
   )
 
@@ -1873,7 +1921,9 @@ server <- function(input, output, session) {
 
   observeEvent(input$map_shape_click, {
     req(data_available())
-    if (is_hcp_mode()) return(invisible(NULL))
+    if (is_hcp_mode()) {
+      return(invisible(NULL))
+    }
     click <- input$map_shape_click
     SubsetG <- SubsetG_r()
     if (!is.null(click) && !is.null(SubsetG)) {
