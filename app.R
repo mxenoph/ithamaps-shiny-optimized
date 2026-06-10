@@ -2051,6 +2051,34 @@ server <- function(input, output, session) {
     raster::extent(bounds$west, bounds$east, bounds$south, bounds$north)
   })
 
+  prediction_disclaimer_html <- reactive({
+    req(is_prediction_mode())
+    query_info <- query_bundle()$query_info %||% list()
+
+    requested_resolution <- as.character(query_info$Resolution %||% "Not provided")
+    requested_parameter <- as.character(query_info$Parameter %||% "Not provided")
+    requested_cause <- as.character(
+      query_info$HemoglobinopathyP %||%
+        query_info$HemoglobinopathyC %||%
+        query_info$HemoglobinopathyH %||%
+        query_info$Cause %||%
+        "Not provided"
+    )
+
+    HTML(paste0(
+      "<div style='margin-bottom: 8px; padding: 8px; border: 1px solid #e3b341; background: #fff8e1; border-radius: 6px;'>",
+      "<strong>Disclaimer:</strong> Prediction rasters are currently generated at global level only, ",
+      "for high-quality carrier prevalence data in Beta Thalassaemia. ",
+      "Additional parameter combinations may become available as new validated datasets are incorporated.",
+      "<br><span style='font-size: 0.82rem;'><strong>Current prediction query:</strong> ",
+      "Resolution = ", requested_resolution,
+      "; Measure = ", requested_parameter,
+      "; Cause = ", requested_cause,
+      ".</span>",
+      "</div>"
+    ))
+  })
+
   output$mean_legend <- renderUI({
     req(is_prediction_mode())
     assets <- prediction_data_r()
@@ -2077,34 +2105,41 @@ server <- function(input, output, session) {
 
   output$selected_prediction_values <- renderUI({
     req(is_prediction_mode())
+    disclaimer <- prediction_disclaimer_html()
     values <- selected_prediction_point()
     if (is.null(values)) {
-      return(HTML("<strong>Tip:</strong> Click any map to display the mean predicted carrier prevalence, prediction uncertainty, and estimated number of carriers at the selected location."))
+      return(tagList(
+        disclaimer,
+        HTML("<strong>Tip:</strong> Click any map to display the mean predicted carrier prevalence, prediction uncertainty, and estimated number of carriers at the selected location.")
+      ))
     }
     mean_value <- ifelse(is.na(values$Mean), "No data", round(values$Mean, 4))
     ci95_value <- ifelse(is.na(values$CI95), "No data", round(values$CI95, 4))
     burden_value <- ifelse(is.na(values$Burden), "No data", round(values$Burden, 4))
-    HTML(paste0(
-      "<h5 style='margin-bottom: 8px;'>Data at selected coordinates</h5><table class='value-table'>",
-      "<tr><td>Longitude</td><td>", round(values$Longitude, 5), "</td></tr>",
-      "<tr><td>Latitude</td><td>", round(values$Latitude, 5), "</td></tr>",
-      "<tr><td>ADM0</td><td>", values$ADM0, "</td></tr>",
-      "<tr><td>ADM1</td><td>", values$ADM1, "</td></tr>",
-      "<tr><td>ADM2</td><td>", values$ADM2, "</td></tr>",
-      "<tr><td>Mean predicted carrier prevalence</td><td>", mean_value, "</td></tr>",
-      "<tr><td>Prediction uncertainty (95% CI)</td><td>", ci95_value, "</td></tr>",
-      "<tr><td>Estimated number of carriers</td><td>", burden_value, "</td></tr></table>"
-    ))
+    tagList(
+      disclaimer,
+      HTML(paste0(
+        "<h5 style='margin-bottom: 8px;'>Data at selected coordinates</h5><table class='value-table'>",
+        "<tr><td>Longitude</td><td>", round(values$Longitude, 5), "</td></tr>",
+        "<tr><td>Latitude</td><td>", round(values$Latitude, 5), "</td></tr>",
+        "<tr><td>ADM0</td><td>", values$ADM0, "</td></tr>",
+        "<tr><td>ADM1</td><td>", values$ADM1, "</td></tr>",
+        "<tr><td>ADM2</td><td>", values$ADM2, "</td></tr>",
+        "<tr><td>Mean predicted carrier prevalence</td><td>", mean_value, "</td></tr>",
+        "<tr><td>Prediction uncertainty (95% CI)</td><td>", ci95_value, "</td></tr>",
+        "<tr><td>Estimated number of carriers</td><td>", burden_value, "</td></tr></table>"
+      ))
+    )
   })
 
   output$map_mean <- renderLeaflet({
     req(is_prediction_mode())
     assets <- prediction_data_r()
-    leaflet(options = leafletOptions(worldCopyJump = FALSE)) %>%
+    leaflet() %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
-      setView(lng = 115, lat = 30, zoom = 2) %>%
+      setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$Mean, colors = assets$Mean_palette, opacity = 0.8, project = TRUE) %>%
       htmlwidgets::onRender(sync_js)
   })
@@ -2112,11 +2147,11 @@ server <- function(input, output, session) {
   output$map_ci95 <- renderLeaflet({
     req(is_prediction_mode())
     assets <- prediction_data_r()
-    leaflet(options = leafletOptions(worldCopyJump = FALSE)) %>%
+    leaflet() %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
-      setView(lng = 115, lat = 30, zoom = 2) %>%
+      setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$CI95, colors = assets$CI95_palette, opacity = 0.8, project = TRUE) %>%
       htmlwidgets::onRender(sync_js)
   })
@@ -2124,11 +2159,12 @@ server <- function(input, output, session) {
   output$map_burden <- renderLeaflet({
     req(is_prediction_mode())
     assets <- prediction_data_r()
-    leaflet(options = leafletOptions(worldCopyJump = FALSE)) %>%
+    leaflet() %>%
+    #leaflet(width = 1300, height = 750, options = leafletOptions(worldCopyJump = FALSE, minZoom = 2)) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
-      setView(lng = 115, lat = 30, zoom = 2) %>%
+      setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$Burden, colors = assets$Burden_palette, opacity = 0.8, project = TRUE) %>%
       htmlwidgets::onRender(sync_js)
   })
@@ -2137,11 +2173,11 @@ server <- function(input, output, session) {
     req(is_prediction_mode())
     assets <- prediction_data_r()
     # options worldCopyJump = FALSE prevents the map from creating a duplicate set of tiles when the user pans across the antimeridian, which would cause confusion when interpreting the raster and clicking to interrogate values.
-    leaflet(options = leafletOptions(worldCopyJump = FALSE)) %>%
+    leaflet() %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
-      setView(lng = 115, lat = 30, zoom = 2) %>%
+      setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$CI95, colors = assets$CI95_palette, opacity = 0.8, project = TRUE) %>%
       addCircleMarkers(
         data = assets$Selected_sites,
