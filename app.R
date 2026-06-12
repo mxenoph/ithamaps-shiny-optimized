@@ -1479,6 +1479,42 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   perf_state <- reactiveValues(map_render_secs = NULL, table_render_secs = NULL)
+  trace_env <- new.env(parent = emptyenv())
+  trace_env$bundle_builds <- 0L
+  trace_env$last_qs <- NA_character_
+
+  log_trace <- function(event, details = "") {
+    sid <- substr(session$token %||% "unknown", 1, 8)
+    ts <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    prefix <- paste0("[ithamaps-trace][", ts, "][sid=", sid, "][", event, "]")
+    if (nchar(details) > 0) {
+      cat(prefix, details, "\n")
+    } else {
+      cat(prefix, "\n")
+    }
+    flush.console()
+  }
+
+  startup_ua <- substr(session$request$HTTP_USER_AGENT %||% "", 1, 140)
+  startup_ref <- substr(session$request$HTTP_REFERER %||% "", 1, 140)
+  log_trace("session_start", paste0("ua='", startup_ua, "' ref='", startup_ref, "'"))
+
+  session$onSessionEnded(function() {
+    log_trace("session_end", paste0("bundle_builds=", trace_env$bundle_builds))
+  })
+
+  observeEvent(session$clientData$url_search, {
+    current_qs <- normalize_query_string(session$clientData$url_search %||% "")
+    if (is.na(trace_env$last_qs)) {
+      log_trace("url_search_init", paste0("qs='", current_qs, "'"))
+      trace_env$last_qs <- current_qs
+      return()
+    }
+    if (!identical(current_qs, trace_env$last_qs)) {
+      log_trace("url_search_change", paste0("from='", trace_env$last_qs, "' to='", current_qs, "'"))
+      trace_env$last_qs <- current_qs
+    }
+  }, ignoreInit = FALSE)
 
   # Build data bundle from the current URL query string
   query_bundle <- reactive({
@@ -1488,6 +1524,20 @@ server <- function(input, output, session) {
     bundle$timings <- bundle$timings %||% list()
     bundle$timings$bundle_fetch <- round(proc.time()[["elapsed"]] - fetch_start, 3)
     bundle$timings$query_string <- normalize_query_string(raw_qs)
+
+    trace_env$bundle_builds <- trace_env$bundle_builds + 1L
+    if (trace_env$bundle_builds <= 5L || trace_env$bundle_builds %% 10L == 0L) {
+      cache_hit <- if (isTRUE(bundle$timings$cache_hit)) "yes" else "no"
+      log_trace(
+        "query_bundle_build",
+        paste0(
+          "n=", trace_env$bundle_builds,
+          " cache_hit=", cache_hit,
+          " qs='", bundle$timings$query_string %||% "", "'"
+        )
+      )
+    }
+
     bundle
   })
 
@@ -1634,7 +1684,7 @@ server <- function(input, output, session) {
       ),
       div(
         class = "table-responsive shadow-sm rounded border",
-        style = "max-height: 500px; overflow-y: auto;",
+        style = "",
         DTOutput("data_table")
       )
     )
@@ -1963,6 +2013,20 @@ server <- function(input, output, session) {
   # legends, synchronized map behaviour, and click-based raster interrogation.
   sync_js <- "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95', 'map_burden', 'map_ci95_2']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
 
+  # Shared prediction-map options prevent extreme zoom-out tile requests that can
+  # render broken-image placeholders near the map edge while keeping sync behaviour.
+  prediction_leaflet_options <- leafletOptions(
+    worldCopyJump = FALSE,
+    minZoom = 1,
+    scrollWheelZoom = FALSE,
+    zoomControl = TRUE
+  )
+
+  default_leaflet_options <- leafletOptions(
+    scrollWheelZoom = FALSE,
+    zoomControl = TRUE
+  )
+
   prediction_legend_bar <- function(palette_values, title, min_value, max_value) {
     gradient <- paste0(palette_values, collapse = ", ")
     HTML(paste0(
@@ -2135,7 +2199,7 @@ server <- function(input, output, session) {
   output$map_mean <- renderLeaflet({
     req(is_prediction_mode())
     assets <- prediction_data_r()
-    leaflet() %>%
+    leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
@@ -2147,7 +2211,7 @@ server <- function(input, output, session) {
   output$map_ci95 <- renderLeaflet({
     req(is_prediction_mode())
     assets <- prediction_data_r()
-    leaflet() %>%
+    leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
@@ -2159,7 +2223,7 @@ server <- function(input, output, session) {
   output$map_burden <- renderLeaflet({
     req(is_prediction_mode())
     assets <- prediction_data_r()
-    leaflet() %>%
+    leaflet(options = prediction_leaflet_options) %>%
     #leaflet(width = 1300, height = 750, options = leafletOptions(worldCopyJump = FALSE, minZoom = 2)) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
@@ -2173,7 +2237,7 @@ server <- function(input, output, session) {
     req(is_prediction_mode())
     assets <- prediction_data_r()
     # options worldCopyJump = FALSE prevents the map from creating a duplicate set of tiles when the user pans across the antimeridian, which would cause confusion when interpreting the raster and clicking to interrogate values.
-    leaflet() %>%
+    leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
@@ -2229,7 +2293,7 @@ server <- function(input, output, session) {
 
     if (is_hcp_mode()) {
       data <- SubsetHCP_r()
-      map_widget <- leaflet() %>%
+      map_widget <- leaflet(options = default_leaflet_options) %>%
         addProviderTiles("CartoDB.Positron") %>%
         addScaleBar(position = "bottomleft") %>%
         addCircleMarkers(
@@ -2270,7 +2334,7 @@ server <- function(input, output, session) {
     legend_vals <- pal_metric_obj$legend_vals
     data <- filtered_data()
 
-    map_widget <- leaflet(data) %>%
+    map_widget <- leaflet(data, options = default_leaflet_options) %>%
       addProviderTiles("CartoDB.Positron") %>%
       addScaleBar(position = "bottomleft") %>%
       addCircleMarkers(
@@ -2332,6 +2396,87 @@ server <- function(input, output, session) {
     req(data_available())
     render_start <- proc.time()[["elapsed"]]
 
+    build_filter_meta <- function(df) {
+      lapply(seq_along(df), function(i) {
+        col_name <- names(df)[i]
+        col <- df[[i]]
+
+        if (col_name %in% c("Latitude", "Longitude")) {
+          return(list(type = "native", options = character(0)))
+        }
+        if (is.numeric(col) || is.integer(col)) {
+          return(list(type = "native", options = character(0)))
+        }
+        vals <- as.character(col)
+        vals <- trimws(vals)
+        vals <- vals[!is.na(vals) & nzchar(vals)]
+        vals <- sort(unique(vals))
+        if (length(vals) <= 1) {
+          return(list(type = "native", options = character(0)))
+        }
+        list(type = "select", options = unname(vals))
+      })
+    }
+
+    make_dropdown_filter_init <- function(filter_meta_json) {
+      JS(sprintf(
+        "function(settings, json) {
+           var api = this.api();
+           var filterMeta = %s;
+           if (!Array.isArray(filterMeta)) {
+             filterMeta = Object.keys(filterMeta || {}).map(function(k) { return filterMeta[k]; });
+           }
+           var normalizeVals = function(v) {
+             if (v === null || v === undefined || v === '') return [];
+             return Array.isArray(v) ? v : [v];
+           };
+           var $container = $(api.table().container());
+           var $filterCells = $('thead tr:eq(1) td, thead tr:eq(1) th', $container);
+           if ($filterCells.length === 0) {
+             $filterCells = $('tfoot td, tfoot th', $container);
+           }
+           if ($filterCells.length === 0) { return; }
+           var colCount = api.columns().count();
+           var colOffset = (colCount === (filterMeta.length + 1)) ? 1 : 0;
+
+           api.columns().every(function() {
+             var colIdx = this.index();
+             var metaIdx = colIdx - colOffset;
+             var meta = filterMeta[metaIdx] || { type: 'native', options: [] };
+             if (meta.type !== 'select') { return; }
+
+             var column = this;
+             var $cell = $filterCells.eq(colIdx);
+             if (!$cell.length) { return; }
+             var $input = $('input,select', $cell);
+             if (!$input.length) { return; }
+
+             var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
+             $select.append($('<option></option>').attr('value', '__all__').text('All'));
+             $.each(meta.options || [], function(_, val) {
+               $select.append($('<option></option>').attr('value', val).text(val));
+             });
+             $cell.empty().append($select);
+
+             var applyFilter = function(val) {
+               if (!val || val === '__all__') {
+                 column.search('', true, false).draw();
+                 return;
+               }
+               var escaped = $.fn.dataTable.util.escapeRegex(val);
+               column.search('^' + escaped + '$', true, false).draw();
+             };
+
+             $select.val('__all__');
+             $select.on('change', function() {
+               applyFilter($(this).val());
+             });
+           });
+         }",
+        filter_meta_json
+      ))
+    }
+
     if (is_hcp_mode()) {
       SubsetHCP <- SubsetHCP_r()
       idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
@@ -2361,8 +2506,10 @@ server <- function(input, output, session) {
         selection = "single",
         filter = "top",
         options = list(
-          pageLength = 25,
-          scrollX = TRUE,
+          pageLength = 10,
+          lengthChange = FALSE,
+          scrollX = FALSE,
+          initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df)), auto_unbox = TRUE)),
           rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
           columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
         ),
@@ -2410,8 +2557,10 @@ server <- function(input, output, session) {
       selection = "single",
       filter = "top",
       options = list(
-        pageLength = 25,
-        scrollX = TRUE,
+        pageLength = 10,
+        lengthChange = FALSE,
+        scrollX = FALSE,
+        initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df)), auto_unbox = TRUE)),
         rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
         columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
       ),
