@@ -990,8 +990,7 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
   if (is.null(metric_key) || length(metric_key) == 0 || is.na(metric_key[[1]])) {
     return(filtered_data %>%
       dplyr::select(all_of(names_before)) %>%
-      mutate(Metric = round(value, 2))
-    )
+      mutate(Metric = round(value, 2)))
   }
 
   filtered_data %>%
@@ -1503,18 +1502,21 @@ server = function(input, output, session) {
     log_trace("session_end", paste0("bundle_builds=", trace_env$bundle_builds))
   })
 
-  observeEvent(session$clientData$url_search, {
-    current_qs = normalize_query_string(session$clientData$url_search %||% "")
-    if (is.na(trace_env$last_qs)) {
-      log_trace("url_search_init", paste0("qs='", current_qs, "'"))
-      trace_env$last_qs = current_qs
-      return()
-    }
-    if (!identical(current_qs, trace_env$last_qs)) {
-      log_trace("url_search_change", paste0("from='", trace_env$last_qs, "' to='", current_qs, "'"))
-      trace_env$last_qs = current_qs
-    }
-  }, ignoreInit = FALSE)
+  observeEvent(session$clientData$url_search,
+    {
+      current_qs = normalize_query_string(session$clientData$url_search %||% "")
+      if (is.na(trace_env$last_qs)) {
+        log_trace("url_search_init", paste0("qs='", current_qs, "'"))
+        trace_env$last_qs = current_qs
+        return()
+      }
+      if (!identical(current_qs, trace_env$last_qs)) {
+        log_trace("url_search_change", paste0("from='", trace_env$last_qs, "' to='", current_qs, "'"))
+        trace_env$last_qs = current_qs
+      }
+    },
+    ignoreInit = FALSE
+  )
 
   # Build data bundle from the current URL query string
   query_bundle = reactive({
@@ -2013,6 +2015,42 @@ server = function(input, output, session) {
   # legends, synchronized map behaviour, and click-based raster interrogation.
   sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95', 'map_burden', 'map_ci95_2']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
 
+  cluster_hover_js = function(default_fill, default_stroke) {
+    paste(
+      "function(el, x) {",
+      "  var map = this;",
+      "",
+      "  map.on('layeradd', function(e) {",
+      "    var layer = e.layer;",
+      "    if (layer.getChildCount && layer._icon) {",
+      "      var count = layer.getChildCount();",
+      "      var color = 'black';",
+      "      var icon = L.divIcon({",
+      "        html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>',",
+      "        className: '',",
+      "        iconSize: new L.Point(20, 20)",
+      "      });",
+      "      layer.setIcon(icon);",
+      "    }",
+      "  });",
+      "",
+      "  map.on('layeradd', function(e) {",
+      "    var layer = e.layer;",
+      "    if (layer instanceof L.CircleMarker && !layer.getChildCount) {",
+      "      layer.on('mouseover', function() {",
+      "        this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'});",
+      "        this.bringToFront();",
+      "      });",
+      "      layer.on('mouseout', function() {",
+      sprintf("        this.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s'});", default_stroke, default_fill),
+      "      });",
+      "    }",
+      "  });",
+      "}",
+      sep = "\n"
+    )
+  }
+
   # Shared prediction-map options prevent extreme zoom-out tile requests that can
   # render broken-image placeholders near the map edge while keeping sync behaviour.
   prediction_leaflet_options = leafletOptions(
@@ -2224,7 +2262,7 @@ server = function(input, output, session) {
     req(is_prediction_mode())
     assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
-    #leaflet(width = 1300, height = 750, options = leafletOptions(worldCopyJump = FALSE, minZoom = 2)) %>%
+      # leaflet(width = 1300, height = 750, options = leafletOptions(worldCopyJump = FALSE, minZoom = 2)) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
@@ -2253,7 +2291,7 @@ server = function(input, output, session) {
         fillOpacity = 0.9,
         weight = 1.5,
         group = "Priority sites",
-        popup = ~paste0(
+        popup = ~ paste0(
           "<strong>ADM0:</strong> ", ADM0, "<br>",
           "<strong>ADM1:</strong> ", ADM1, "<br>",
           "<strong>ADM2:</strong> ", ADM2, "<br>",
@@ -2316,13 +2354,7 @@ server = function(input, output, session) {
             maxClusterRadius = 4
           )
         ) %>%
-        htmlwidgets::onRender("function(el, x) {var map = this;
-
-                                                                                     // Style clusters
-                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer.getChildCount && layer._icon) {var count = layer.getChildCount(); var color = 'black'; var icon = L.divIcon({html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>', className: '', iconSize: new L.Point(20, 20)}); layer.setIcon(icon);}});
-
-                                                                                     // Highlight on hover
-                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'steelblue', fillColor: 'steelblue'});});}});}")
+        htmlwidgets::onRender(cluster_hover_js("steelblue", "steelblue"))
       perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(map_widget)
     }
@@ -2379,13 +2411,7 @@ server = function(input, output, session) {
         opacity = 1,
         position = "bottomright"
       ) %>%
-      htmlwidgets::onRender("function(el, x) {var map = this;
-
-                                                                                     // Style clusters
-                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer.getChildCount && layer._icon) {var count = layer.getChildCount(); var color = 'black'; var icon = L.divIcon({html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>', className: '', iconSize: new L.Point(20, 20)}); layer.setIcon(icon);}});
-
-                                                                                     // Highlight on hover
-                                                                                     map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'white', fillColor: 'black'});});}});}")
+      htmlwidgets::onRender(cluster_hover_js("black", "white"))
 
     perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
     map_widget
