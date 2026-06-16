@@ -21,10 +21,10 @@ library(shinycssloaders)
 #   - env vars DB_USER_FILE / DB_PASSWORD_FILE can point to mounted secret files
 #     and take precedence over plain env vars
 # ---------------------------------------------------------------------------
-read_secret_or_env <- function(value_key, file_key) {
-  file_path <- Sys.getenv(file_key, unset = "")
+read_secret_or_env = function(value_key, file_key) {
+  file_path = Sys.getenv(file_key, unset = "")
   if (nchar(file_path) > 0 && file.exists(file_path)) {
-    value <- readLines(file_path, warn = FALSE, n = 1)
+    value = readLines(file_path, warn = FALSE, n = 1)
     if (length(value) > 0 && nchar(value[1]) > 0) {
       return(trimws(value[1]))
     }
@@ -32,30 +32,30 @@ read_secret_or_env <- function(value_key, file_key) {
   Sys.getenv(value_key, unset = "")
 }
 
-pick_configuration <- function() {
-  cfg <- read_xlsx("User_Configuration.xlsx")
-  machine_env <- Sys.getenv("ITHAMAPS_MACHINE", unset = "")
+pick_configuration = function() {
+  cfg = read_xlsx("User_Configuration.xlsx")
+  machine_env = Sys.getenv("ITHAMAPS_MACHINE", unset = "")
   if (nchar(machine_env) > 0 && machine_env %in% cfg$machine) {
-    row <- cfg %>%
+    row = cfg %>%
       filter(machine == machine_env) %>%
       slice(1)
   } else {
-    row <- cfg %>% slice(1)
+    row = cfg %>% slice(1)
   }
-  host_env <- Sys.getenv("ITHAMAPS_DB_HOST", unset = "")
-  if (nchar(host_env) > 0) row$host <- host_env
-  port_env <- Sys.getenv("ITHAMAPS_DB_PORT", unset = "")
-  if (nchar(port_env) > 0) row$port <- as.integer(port_env)
-  user_env <- read_secret_or_env("DB_USER", "DB_USER_FILE")
-  if (nchar(user_env) > 0) row$username <- user_env
-  pass_env <- read_secret_or_env("DB_PASSWORD", "DB_PASSWORD_FILE")
-  if (nchar(pass_env) > 0) row$password <- pass_env
+  host_env = Sys.getenv("ITHAMAPS_DB_HOST", unset = "")
+  if (nchar(host_env) > 0) row$host = host_env
+  port_env = Sys.getenv("ITHAMAPS_DB_PORT", unset = "")
+  if (nchar(port_env) > 0) row$port = as.integer(port_env)
+  user_env = read_secret_or_env("DB_USER", "DB_USER_FILE")
+  if (nchar(user_env) > 0) row$username = user_env
+  pass_env = read_secret_or_env("DB_PASSWORD", "DB_PASSWORD_FILE")
+  if (nchar(pass_env) > 0) row$password = pass_env
   row
 }
 
-scalar_text <- function(value, field_name) {
-  out <- as.character(value[[1]])
-  out <- trimws(out)
+scalar_text = function(value, field_name) {
+  out = as.character(value[[1]])
+  out = trimws(out)
   if (length(out) != 1 || is.na(out) || nchar(out) == 0) {
     stop(
       paste0(
@@ -68,8 +68,8 @@ scalar_text <- function(value, field_name) {
   out
 }
 
-scalar_port <- function(value, field_name = "port") {
-  out <- suppressWarnings(as.integer(value[[1]]))
+scalar_port = function(value, field_name = "port") {
+  out = suppressWarnings(as.integer(value[[1]]))
   if (length(out) != 1 || is.na(out) || out <= 0) {
     stop(
       paste0(
@@ -82,16 +82,16 @@ scalar_port <- function(value, field_name = "port") {
   out
 }
 
-Configuration <- pick_configuration()
+Configuration = pick_configuration()
 
 # ---------------------------------------------------------------------------
 # open_mariadb_connection(): connect using correct RMariaDB argument names
 # ---------------------------------------------------------------------------
-open_mariadb_connection <- function(dbname, cfg) {
-  user_val <- scalar_text(cfg$username, "username")
-  pass_val <- scalar_text(cfg$password, "password")
-  host_val <- scalar_text(cfg$host, "host")
-  port_val <- scalar_port(cfg$port, "port")
+open_mariadb_connection = function(dbname, cfg) {
+  user_val = scalar_text(cfg$username, "username")
+  pass_val = scalar_text(cfg$password, "password")
+  host_val = scalar_text(cfg$host, "host")
+  port_val = scalar_port(cfg$port, "port")
   dbConnect(RMariaDB::MariaDB(),
     dbname   = dbname,
     user     = user_val,
@@ -102,10 +102,10 @@ open_mariadb_connection <- function(dbname, cfg) {
 }
 
 # Connection to ITHANET
-Ithanet <- open_mariadb_connection("ithabase_mk", Configuration)
+Ithanet = open_mariadb_connection("ithabase_mk", Configuration)
 
-Datatables <- dbListTables(Ithanet)
-Datatables <- Datatables[Datatables %in% c(
+Datatables = dbListTables(Ithanet)
+Datatables = Datatables[Datatables %in% c(
   "country",
   "locus",
   "globin_phenotypes",
@@ -142,10 +142,10 @@ dbDisconnect(Ithanet)
 rm(Ithanet, Data, Datatables)
 
 # Connection to joomla
-Joomla <- open_mariadb_connection("joomla_live", Configuration)
+Joomla = open_mariadb_connection("joomla_live", Configuration)
 
-Datatables <- dbListTables(Joomla)
-Datatables <- Datatables[Datatables %in% c("itha_experts")]
+Datatables = dbListTables(Joomla)
+Datatables = Datatables[Datatables %in% c("itha_experts")]
 
 for (Data in Datatables) {
   assign(
@@ -163,13 +163,13 @@ rm(Joomla, Data, Datatables)
 #   - writes summary and key-level diagnostics for detected many-to-many joins
 #   - uses relationship='many-to-many' only when detected to avoid noisy warnings
 # ---------------------------------------------------------------------------
-join_log_dir <- Sys.getenv("ITHAMAPS_JOIN_LOG_DIR", unset = "logs")
+join_log_dir = Sys.getenv("ITHAMAPS_JOIN_LOG_DIR", unset = "logs")
 dir.create(join_log_dir, recursive = TRUE, showWarnings = FALSE)
-join_log_summary_path <- file.path(join_log_dir, "many_to_many_join_summary.csv")
-join_log_keys_path <- file.path(join_log_dir, "many_to_many_join_keys.csv")
+join_log_summary_path = file.path(join_log_dir, "many_to_many_join_summary.csv")
+join_log_keys_path = file.path(join_log_dir, "many_to_many_join_keys.csv")
 
-append_csv_row <- function(path, df_row) {
-  needs_header <- !file.exists(path)
+append_csv_row = function(path, df_row) {
+  needs_header = !file.exists(path)
   utils::write.table(
     df_row,
     file = path,
@@ -181,23 +181,23 @@ append_csv_row <- function(path, df_row) {
   )
 }
 
-log_many_to_many_join <- function(x, y, by, join_name) {
-  by_cols <- if (is.character(by)) by else names(by)
+log_many_to_many_join = function(x, y, by, join_name) {
+  by_cols = if (is.character(by)) by else names(by)
 
-  left_dups <- x %>%
+  left_dups = x %>%
     dplyr::count(dplyr::across(dplyr::all_of(by_cols)), name = "left_n") %>%
     dplyr::filter(left_n > 1)
 
-  right_dups <- y %>%
+  right_dups = y %>%
     dplyr::count(dplyr::across(dplyr::all_of(by_cols)), name = "right_n") %>%
     dplyr::filter(right_n > 1)
 
-  m2m_keys <- dplyr::inner_join(left_dups, right_dups, by = by_cols)
-  has_m2m <- nrow(m2m_keys) > 0
+  m2m_keys = dplyr::inner_join(left_dups, right_dups, by = by_cols)
+  has_m2m = nrow(m2m_keys) > 0
 
   if (has_m2m) {
-    timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
-    summary_row <- data.frame(
+    timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    summary_row = data.frame(
       timestamp = timestamp,
       join_name = join_name,
       by_columns = paste(by_cols, collapse = "|"),
@@ -210,7 +210,7 @@ log_many_to_many_join <- function(x, y, by, join_name) {
     )
     append_csv_row(join_log_summary_path, summary_row)
 
-    key_rows <- m2m_keys %>%
+    key_rows = m2m_keys %>%
       dplyr::mutate(
         timestamp = timestamp,
         join_name = join_name,
@@ -222,7 +222,7 @@ log_many_to_many_join <- function(x, y, by, join_name) {
   has_m2m
 }
 
-left_join_logged <- function(x, y, by, join_name) {
+left_join_logged = function(x, y, by, join_name) {
   if (log_many_to_many_join(x, y, by = by, join_name = join_name)) {
     dplyr::left_join(x, y, by = by, relationship = "many-to-many")
   } else {
@@ -231,8 +231,8 @@ left_join_logged <- function(x, y, by, join_name) {
 }
 
 # Fetch data
-Note_function <- function(end_year_assumed, region_comment, nationality_comment, comments, sample_size_comment) {
-  parts <- c(
+Note_function = function(end_year_assumed, region_comment, nationality_comment, comments, sample_size_comment) {
+  parts = c(
     if (!is.na(end_year_assumed)) end_year_assumed,
     if (!is.na(region_comment)) region_comment,
     if (!is.na(nationality_comment)) nationality_comment,
@@ -242,7 +242,7 @@ Note_function <- function(end_year_assumed, region_comment, nationality_comment,
   if (length(parts) > 0) paste(parts, collapse = ", ") else "None"
 }
 
-db_ithamaps_entries <- db_ithamaps_entries %>%
+db_ithamaps_entries = db_ithamaps_entries %>%
   rename("phen_id" = globin_phenotype) %>%
   left_join(db_globin_phenotypes %>%
     rename(
@@ -388,8 +388,8 @@ db_ithamaps_entries <- db_ithamaps_entries %>%
   ) %>%
   distinct()
 
-Note_function2 <- function(end_year_assumed, region_comment, compensation_comment) {
-  parts <- c(
+Note_function2 = function(end_year_assumed, region_comment, compensation_comment) {
+  parts = c(
     if (!is.na(end_year_assumed)) end_year_assumed,
     if (!is.na(region_comment)) region_comment,
     if (!is.na(compensation_comment)) compensation_comment
@@ -397,7 +397,7 @@ Note_function2 <- function(end_year_assumed, region_comment, compensation_commen
   if (length(parts) > 0) paste(parts, collapse = ", ") else "None"
 }
 
-db_hcp_per_region <- db_hcp_per_region %>%
+db_hcp_per_region = db_hcp_per_region %>%
   rename("source_id" = source) %>%
   left_join(db_regions, by = "regions_id") %>%
   left_join(db_cause, by = "cause_id") %>%
@@ -483,11 +483,11 @@ db_hcp_per_region <- db_hcp_per_region %>%
     )
   ) %>%
   mutate(across(everything(), ~ {
-    value_chr <- as.character(.)
+    value_chr = as.character(.)
     ifelse(value_chr == ":", "NULL", value_chr)
   })) %>%
   mutate(across(everything(), ~ {
-    value_chr <- as.character(.)
+    value_chr = as.character(.)
     ifelse(is.na(value_chr), "NULL", value_chr)
   })) %>%
   mutate(
@@ -519,22 +519,22 @@ db_hcp_per_region <- db_hcp_per_region %>%
 rm(Note_function, Note_function2)
 
 # User input options
-Resolution <- data.frame(
+Resolution = data.frame(
   ID = c(1, 2, 3),
   Option = c("Global-level", "Continent-level", "Country-level")
 )
 
-Continent <- data.frame(
+Continent = data.frame(
   ID = c(1, 2, 3, 4, 5, 6, 7),
   Option = c(unique(db_country$continentName))
 )
 
-Country <- data.frame(
+Country = data.frame(
   ID = db_country$idCountry,
   Option = db_country$countryName
 )
 
-Parameter <- data.frame(
+Parameter = data.frame(
   ID = db_measure$measure_id,
   Option = db_measure$measure_name
 ) %>%
@@ -549,13 +549,13 @@ Parameter <- data.frame(
     Option = "Healthcare availability"
   ))
 
-HemoglobinopathyH <- data.frame(
+HemoglobinopathyH = data.frame(
   ID = db_cause$cause_id,
   Option = db_cause$cause_name
 ) %>%
   filter(Option %in% c("Thalassaemia", "Hemoglobinopathy", "Sickle Cell Disease"))
 
-HemoglobinopathyP <- data.frame(
+HemoglobinopathyP = data.frame(
   ID = db_cause$cause_id,
   Option = db_cause$cause_name
 ) %>%
@@ -567,7 +567,7 @@ HemoglobinopathyP <- data.frame(
     "Thalassaemia Major", "Hemoglobin H Disease", "Hydrops Fetalis", "Hemoglobin Barts", "Sickle Cell Disease-SS"
   ))
 
-HemoglobinopathyC <- data.frame(
+HemoglobinopathyC = data.frame(
   ID = db_cause$cause_id,
   Option = db_cause$cause_name
 ) %>%
@@ -576,7 +576,7 @@ HemoglobinopathyC <- data.frame(
     "Hemoglobin C Disease", "Thalassaemia", "Delta Thalassaemia", "Sickle Cell Disease-SS"
   ))
 
-Healthcare <- data.frame(
+Healthcare = data.frame(
   ID = db_hc_policies$hcp_id,
   Option = db_hc_policies$hcp_name,
   Extra = db_hc_policies$ancestor0
@@ -593,24 +593,24 @@ for (x in 1:13) {
   )
 }
 
-GlobinPheAF <- data.frame(
+GlobinPheAF = data.frame(
   ID = db_globin_phenotypes$id,
   Option = db_globin_phenotypes$name
 ) %>%
   filter(Option %in% c("α0", "α⁺", "α-thalassaemia modifier", "non-deletional α+")) %>%
   mutate(Option = ifelse(Option == "α⁺", "α+", Option))
 
-VariantC <- data.frame(
+VariantC = data.frame(
   ID = c(1, 2),
   Option = c("Individual variants", "Grouped variants by globin phenotype")
 )
 
-IthaID <- data.frame(
+IthaID = data.frame(
   ID = c(db_ithagenes_common$ithaID),
   Option = c(db_ithagenes_common$ithaID)
 )
 
-GlobinPheRAF <- data.frame(
+GlobinPheRAF = data.frame(
   ID = db_globin_phenotypes$id,
   Option = db_globin_phenotypes$name
 ) %>%
@@ -618,20 +618,20 @@ GlobinPheRAF <- data.frame(
   mutate(Option = ifelse(Option == "α⁺", "α+", Option)) %>%
   rbind(data.frame(ID = 38, Option = "Other"))
 
-Metric <- data.frame(
+Metric = data.frame(
   ID = c(1, 2, 3, 4, 5, 6, 7),
   Option = c("Weighted mean", "Mean", "Median", "Highest value", "Lowest value", "Most recent value", "Value from largest surveyed population"),
   Extra = c("Wmean", "Mean", "Median", "Max", "Min", "Latest", "Largest")
 )
 
-Aggregation <- data.frame(
+Aggregation = data.frame(
   ID = c(1, 2, 3),
   Option = c("Country-level", "Province-level", "District-level")
 )
 
 # Ported from IthaMaps-shinyapp/app.R lines 345-359: add the DataType query
 # dimension so the target app can route between curated and prediction modes.
-DataType <- data.frame(
+DataType = data.frame(
   ID = c(1, 2),
   Option = c("Curated data", "Prediction data")
 )
@@ -641,37 +641,37 @@ rm(x, Configuration, list = setdiff(ls(pattern = "^db_"), c("db_hcp_per_region",
 # ---------------------------------------------------------------------------
 # Cache spatial files once at startup (re-used per session in server)
 # ---------------------------------------------------------------------------
-adm0_sf <- read_sf("ADM0.gpkg")
-adm1_sf <- read_sf("ADM1.gpkg")
-adm2_sf <- read_sf("ADM2.gpkg")
+adm0_sf = read_sf("ADM0.gpkg")
+adm1_sf = read_sf("ADM1.gpkg")
+adm2_sf = read_sf("ADM2.gpkg")
 
-adm0_sel <- adm0_sf %>%
+adm0_sel = adm0_sf %>%
   dplyr::select(geo_admin0, name, geom) %>%
   rename("Region" = name)
-adm1_sel <- adm1_sf %>%
+adm1_sel = adm1_sf %>%
   dplyr::select(geo_admin1, name, geom) %>%
   rename("Region1" = name)
-adm2_sel <- adm2_sf %>%
+adm2_sel = adm2_sf %>%
   dplyr::select(geo_admin2, name, geom) %>%
   rename("Region2" = name)
-adm0_lookup <- adm0_sel %>% st_drop_geometry()
-adm1_lookup <- adm1_sel %>% st_drop_geometry()
-adm2_lookup <- adm2_sel %>% st_drop_geometry()
+adm0_lookup = adm0_sel %>% st_drop_geometry()
+adm1_lookup = adm1_sel %>% st_drop_geometry()
+adm2_lookup = adm2_sel %>% st_drop_geometry()
 
 # Ported from IthaMaps-shinyapp/app.R lines 418-426: load prediction rasters,
 # priority sites, and admin lookups once so prediction mode can reuse them.
-load_prediction_assets <- function() {
-  mean_admin <- raster::stack(file.path("Predictions", "Mean_with_admin.tif"))
-  ci95_admin <- raster::stack(file.path("Predictions", "CI95_with_admin.tif"))
-  burden_admin <- raster::stack(file.path("Predictions", "Burden_with_admin.tif"))
+load_prediction_assets = function() {
+  mean_admin = raster::stack(file.path("Predictions", "Mean_with_admin.tif"))
+  ci95_admin = raster::stack(file.path("Predictions", "CI95_with_admin.tif"))
+  burden_admin = raster::stack(file.path("Predictions", "Burden_with_admin.tif"))
 
-  mean_raster <- mean_admin[["Mean"]]
-  ci95_raster <- ci95_admin[["CI95"]]
-  burden_raster <- burden_admin[["Burden"]]
+  mean_raster = mean_admin[["Mean"]]
+  ci95_raster = ci95_admin[["CI95"]]
+  burden_raster = burden_admin[["Burden"]]
 
-  mean_colours <- viridis::viridis(10, option = "F", end = 0.9)
-  ci95_colours <- viridis::viridis(10, option = "G", end = 0.9)
-  burden_colours <- viridis::viridis(10, option = "F", end = 0.9)
+  mean_colours = viridis::viridis(10, option = "F", end = 0.9)
+  ci95_colours = viridis::viridis(10, option = "G", end = 0.9)
+  burden_colours = viridis::viridis(10, option = "F", end = 0.9)
 
   list(
     Mean_admin = mean_admin,
@@ -719,26 +719,26 @@ load_prediction_assets <- function() {
   )
 }
 
-prediction_assets <- load_prediction_assets()
+prediction_assets = load_prediction_assets()
 
 # ---------------------------------------------------------------------------
 # Query helpers (called per-session inside server)
 # ---------------------------------------------------------------------------
-Parse <- function(Query) {
-  Info <- list()
+Parse = function(Query) {
+  Info = list()
   if (is.null(Query) || length(Query) == 0 || is.na(Query[[1]])) {
     return(Info)
   }
 
-  Query <- as.character(Query[[1]])
-  Query <- trimws(Query)
-  qs <- sub("^\\?", "", Query)
+  Query = as.character(Query[[1]])
+  Query = trimws(Query)
+  qs = sub("^\\?", "", Query)
   if (nchar(qs) == 0) {
     return(Info)
   }
 
-  canonicalize_key <- function(raw_key) {
-    key_lower <- tolower(raw_key)
+  canonicalize_key = function(raw_key) {
+    key_lower = tolower(raw_key)
     if (key_lower == "datatype") {
       return("DataType")
     }
@@ -770,7 +770,7 @@ Parse <- function(Query) {
       return("HealthcareDetail")
     }
     if (grepl("^healthcares[0-9]+$", key_lower)) {
-      idx <- suppressWarnings(as.integer(sub("^healthcares([0-9]+)$", "\\1", key_lower)))
+      idx = suppressWarnings(as.integer(sub("^healthcares([0-9]+)$", "\\1", key_lower)))
       if (!is.na(idx) && idx >= 1 && idx <= 13) {
         return(paste0("HealthcareS", idx))
       }
@@ -797,61 +797,61 @@ Parse <- function(Query) {
   }
 
   for (x in strsplit(qs, "&")[[1]]) {
-    Item <- strsplit(x, "=")[[1]]
+    Item = strsplit(x, "=")[[1]]
     if (length(Item) == 2) {
-      key <- canonicalize_key(Item[1])
-      Info[[key]] <- Item[2]
+      key = canonicalize_key(Item[1])
+      Info[[key]] = Item[2]
     }
   }
   Info
 }
 
-Extract <- function(Query) {
-  Info <- list()
+Extract = function(Query) {
+  Info = list()
 
-  parse_int <- function(v) {
+  parse_int = function(v) {
     if (is.null(v)) {
       return(NULL)
     }
-    out <- suppressWarnings(as.integer(v))
+    out = suppressWarnings(as.integer(v))
     if (length(out) == 0 || is.na(out[1])) {
       return(NULL)
     }
     out[1]
   }
 
-  expected_keys <- c(
+  expected_keys = c(
     "DataType", "Resolution", "Continent", "Country", "Parameter",
     "HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP",
     "Healthcare", "GlobinPheAF", "VariantC",
     "GlobinPheRAF", "IthaID", "Metric", "Aggregation"
   )
-  expected_keys <- c(expected_keys, paste0("HealthcareS", 1:13))
+  expected_keys = c(expected_keys, paste0("HealthcareS", 1:13))
 
   for (x in expected_keys) {
-    parsed <- parse_int(Query[[x]])
-    if (!is.null(parsed)) Info[[x]] <- parsed
+    parsed = parse_int(Query[[x]])
+    if (!is.null(parsed)) Info[[x]] = parsed
   }
 
   # Backward-compatible fallback: if HealthcareDetail is provided,
   # map it to the expected HealthcareS<Healthcare> key.
-  healthcare_detail <- parse_int(Query[["HealthcareDetail"]])
-  healthcare_parent <- parse_int(Info[["Healthcare"]])
+  healthcare_detail = parse_int(Query[["HealthcareDetail"]])
+  healthcare_parent = parse_int(Info[["Healthcare"]])
   if (!is.null(healthcare_detail) && !is.null(healthcare_parent) && healthcare_parent >= 1 && healthcare_parent <= 13) {
-    subkey <- paste0("HealthcareS", healthcare_parent)
+    subkey = paste0("HealthcareS", healthcare_parent)
     if (is.null(Info[[subkey]])) {
-      Info[[subkey]] <- healthcare_detail
+      Info[[subkey]] = healthcare_detail
     }
   }
 
   Info
 }
 
-Search <- function(Item, Identifier, Data) {
+Search = function(Item, Identifier, Data) {
   if (is.null(Identifier)) {
     return(NA)
   }
-  Outcome <- Data %>%
+  Outcome = Data %>%
     filter(ID == Identifier) %>%
     pull(Option)
   if (length(Outcome) == 0) {
@@ -862,17 +862,17 @@ Search <- function(Item, Identifier, Data) {
 
 # (Parse, Extract, Search are defined above and used per-session in server)
 
-query_bundle_cache <- new.env(parent = emptyenv())
-query_bundle_cache_version <- "timings_v2"
+query_bundle_cache = new.env(parent = emptyenv())
+query_bundle_cache_version = "timings_v2"
 
-normalize_query_string <- function(raw_qs) {
+normalize_query_string = function(raw_qs) {
   if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
     return("")
   }
   sub("^\\?", "", raw_qs)
 }
 
-entries_to_point_sf <- function(data) {
+entries_to_point_sf = function(data) {
   if (is.null(data) || nrow(data) == 0) {
     return(NULL)
   }
@@ -886,23 +886,23 @@ entries_to_point_sf <- function(data) {
     st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
 }
 
-timed_call <- function(timing_env, label, fn) {
-  start <- proc.time()[["elapsed"]]
-  value <- fn()
-  timing_env[[label]] <- round(proc.time()[["elapsed"]] - start, 3)
+timed_call = function(timing_env, label, fn) {
+  start = proc.time()[["elapsed"]]
+  value = fn()
+  timing_env[[label]] = round(proc.time()[["elapsed"]] - start, 3)
   value
 }
 
-timing_list <- function(timing_env) {
+timing_list = function(timing_env) {
   as.list.environment(timing_env, all.names = TRUE)
 }
 
 # Ported from IthaMaps-shinyapp/app.R lines 1022-1063: apply the curated-data
 # outlier filters and guarded weighted-mean path before aggregated metrics.
-compute_outlier_aware_metric <- function(data, group_col, metric_key) {
-  names_before <- colnames(data)
+compute_outlier_aware_metric = function(data, group_col, metric_key) {
+  names_before = colnames(data)
 
-  filtered_data <- data %>%
+  filtered_data = data %>%
     filter(!is.na(.data[[group_col]])) %>%
     mutate(Exclude = ifelse(grepl("duplicated", note), TRUE, FALSE)) %>%
     group_by(.data[[group_col]]) %>%
@@ -1002,91 +1002,91 @@ compute_outlier_aware_metric <- function(data, group_col, metric_key) {
 
 # Ported from IthaMaps-shinyapp/app.R lines 1430-1504: harmonize healthcare
 # availability outputs, timeframe labels, application mode, and references.
-harmonize_healthcare_subset <- function(data) {
+harmonize_healthcare_subset = function(data) {
   if (is.null(data) || nrow(data) == 0) {
     return(data)
   }
 
-  compensation_sources <- function(comment) {
-    comment <- gsub("\\s*\\(.*?\\)$", "", comment)
-    comment <- gsub("^Mixed\\s+", "", comment)
-    comment <- gsub("\\s*&\\s*|\\s*,\\s*|\\s+and\\s+", " & ", comment)
+  compensation_sources = function(comment) {
+    comment = gsub("\\s*\\(.*?\\)$", "", comment)
+    comment = gsub("^Mixed\\s+", "", comment)
+    comment = gsub("\\s*&\\s*|\\s*,\\s*|\\s+and\\s+", " & ", comment)
     strsplit(comment, "\\s*&\\s*")[[1]]
   }
 
   data %>%
     group_by(geo_admin0, Availability) %>%
     group_modify(function(.x, .y) {
-      diag_set <- setdiff(unique(.x$diagnostic_method), "NULL")
+      diag_set = setdiff(unique(.x$diagnostic_method), "NULL")
       if (length(diag_set) == 2) {
-        .x$diagnostic_method <- "Biochemical/Hematological/Molecular Diagnosis"
+        .x$diagnostic_method = "Biochemical/Hematological/Molecular Diagnosis"
       } else if (length(diag_set) == 1) {
-        .x$diagnostic_method[.x$diagnostic_method == "NULL"] <- diag_set
+        .x$diagnostic_method[.x$diagnostic_method == "NULL"] = diag_set
       }
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      comp_set <- unique(.x$compensation)
-      comp_set <- comp_set[!grepl("^Unspecified", comp_set)]
-      all_sources <- sort(unique(unlist(lapply(comp_set, compensation_sources))))
+      comp_set = unique(.x$compensation)
+      comp_set = comp_set[!grepl("^Unspecified", comp_set)]
+      all_sources = sort(unique(unlist(lapply(comp_set, compensation_sources))))
       if (length(all_sources) > 1) {
-        label <- paste("Mixed", paste(all_sources, collapse = " & "))
+        label = paste("Mixed", paste(all_sources, collapse = " & "))
       } else if (length(all_sources) == 1) {
-        label <- all_sources
+        label = all_sources
       } else {
-        label <- "Unspecified"
+        label = "Unspecified"
       }
-      years <- str_extract(.x$compensation, "(?<=Compensation since )\\d{4}")
-      years <- as.numeric(na.omit(years))
+      years = str_extract(.x$compensation, "(?<=Compensation since )\\d{4}")
+      years = as.numeric(na.omit(years))
       if (length(years) > 0) {
-        label <- paste0(label, " (Compensation since ", min(years), ")")
+        label = paste0(label, " (Compensation since ", min(years), ")")
       }
-      .x$compensation <- label
+      .x$compensation = label
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      elig <- setdiff(unique(.x$eligibility), "NULL")
+      elig = setdiff(unique(.x$eligibility), "NULL")
       if ("Universal" %in% elig) {
-        label <- "Universal"
+        label = "Universal"
       } else if (all(c("Targeted", "On request") %in% elig)) {
-        label <- "Targeted/On request"
+        label = "Targeted/On request"
       } else if (length(elig) == 1) {
-        label <- elig
+        label = elig
       } else {
-        label <- "Unspecified"
+        label = "Unspecified"
       }
-      .x$eligibility <- label
+      .x$eligibility = label
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      app_vals <- unique(.x$application)
+      app_vals = unique(.x$application)
       if ("Mandatory" %in% app_vals) {
-        label <- "Mandatory"
+        label = "Mandatory"
       } else if ("Voluntary" %in% app_vals) {
-        label <- "Voluntary"
+        label = "Voluntary"
       } else {
-        label <- "Unspecified"
+        label = "Unspecified"
       }
-      .x$application <- label
+      .x$application = label
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      impl_vals <- setdiff(unique(.x$implementation), "NULL")
+      impl_vals = setdiff(unique(.x$implementation), "NULL")
       if (length(impl_vals) == 0) {
-        label <- "NULL"
+        label = "NULL"
       } else {
-        impl_vals <- tools::toTitleCase(tolower(impl_vals))
-        label <- paste(sort(impl_vals), collapse = "/")
+        impl_vals = tools::toTitleCase(tolower(impl_vals))
+        label = paste(sort(impl_vals), collapse = "/")
       }
-      .x$implementation <- label
+      .x$implementation = label
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      start_vals <- suppressWarnings(as.numeric(setdiff(.x$start_year, "NULL")))
-      end_vals <- suppressWarnings(as.numeric(setdiff(.x$end_year, "NULL")))
-      start_min <- if (length(start_vals) > 0) min(start_vals, na.rm = TRUE) else NA_real_
-      end_max <- if (length(end_vals) > 0) max(end_vals, na.rm = TRUE) else NA_real_
-      .x$known_implementation_period <- dplyr::case_when(
+      start_vals = suppressWarnings(as.numeric(setdiff(.x$start_year, "NULL")))
+      end_vals = suppressWarnings(as.numeric(setdiff(.x$end_year, "NULL")))
+      start_min = if (length(start_vals) > 0) min(start_vals, na.rm = TRUE) else NA_real_
+      end_max = if (length(end_vals) > 0) max(end_vals, na.rm = TRUE) else NA_real_
+      .x$known_implementation_period = dplyr::case_when(
         !is.na(start_min) & !is.na(end_max) & start_min == end_max ~ as.character(start_min),
         !is.na(start_min) & !is.na(end_max) ~ paste0(start_min, "-", end_max),
         !is.na(start_min) & is.na(end_max) ~ paste0("Since ", start_min),
@@ -1096,14 +1096,14 @@ harmonize_healthcare_subset <- function(data) {
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      collapse_field <- function(vec) {
-        out <- unique(vec[vec != "NULL"])
+      collapse_field = function(vec) {
+        out = unique(vec[vec != "NULL"])
         if (length(out) == 0) {
           return("NULL")
         }
         paste(sort(out), collapse = " | ")
       }
-      .x$citation_str <- collapse_field(.x$citation_str)
+      .x$citation_str = collapse_field(.x$citation_str)
       .x
     }) %>%
     ungroup() %>%
@@ -1114,20 +1114,20 @@ harmonize_healthcare_subset <- function(data) {
 # build_query_bundle(): run per session from URL query string.
 # Returns list(SubsetE, SubsetG, MetricN).  All NULL when no valid query.
 # ---------------------------------------------------------------------------
-build_query_bundle <- function(raw_qs) {
-  timing_env <- new.env(parent = emptyenv())
-  total_start <- proc.time()[["elapsed"]]
+build_query_bundle = function(raw_qs) {
+  timing_env = new.env(parent = emptyenv())
+  total_start = proc.time()[["elapsed"]]
 
-  Query <- timed_call(timing_env, "parse_extract", function() {
+  Query = timed_call(timing_env, "parse_extract", function() {
     Extract(Parse(raw_qs))
   })
 
   # Joomla iframe currently forwards only country; default to Country-level resolution.
   if (!is.null(Query$Country) && is.null(Query$Resolution)) {
-    Query$Resolution <- 3L
+    Query$Resolution = 3L
   }
 
-  lookup <- list(
+  lookup = list(
     DataType = DataType, Resolution = Resolution, Continent = Continent, Country = Country,
     Parameter = Parameter, HemoglobinopathyH = HemoglobinopathyH,
     HemoglobinopathyC = HemoglobinopathyC, HemoglobinopathyP = HemoglobinopathyP,
@@ -1140,18 +1140,18 @@ build_query_bundle <- function(raw_qs) {
     GlobinPheRAF = GlobinPheRAF, IthaID = IthaID, Metric = Metric, Aggregation = Aggregation
   )
 
-  Info <- list()
+  Info = list()
   for (x in names(Query)) {
-    if (x %in% names(lookup)) Info[[x]] <- Search(x, Query[[x]], lookup[[x]])
+    if (x %in% names(lookup)) Info[[x]] = Search(x, Query[[x]], lookup[[x]])
   }
 
   if (is.null(Info$DataType) || is.na(Info$DataType)) {
-    Info$DataType <- "Curated data"
+    Info$DataType = "Curated data"
   }
 
   if (identical(Info$DataType, "Prediction data")) {
-    timing_env[["prediction_assets"]] <- 0
-    timing_env[["total_query_bundle"]] <- round(proc.time()[["elapsed"]] - total_start, 3)
+    timing_env[["prediction_assets"]] = 0
+    timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
     return(list(
       DataType = Info$DataType,
       query_info = Info,
@@ -1164,78 +1164,78 @@ build_query_bundle <- function(raw_qs) {
     ))
   }
 
-  SubsetE <- NULL
-  SubsetHCP <- NULL
-  SubsetG <- NULL
-  MetricN <- NULL
+  SubsetE = NULL
+  SubsetHCP = NULL
+  SubsetG = NULL
+  MetricN = NULL
 
   # --- Resolution & Region ---
-  resolution_result <- timed_call(timing_env, "resolution_filter", function() {
-    result <- list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
+  resolution_result = timed_call(timing_env, "resolution_filter", function() {
+    result = list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
 
     if (!("Resolution" %in% names(Info)) || is.na(Info$Resolution)) {
       return(result)
     }
 
-    Field <- Resolution[Resolution$Option == Info$Resolution, "Option"]
+    Field = Resolution[Resolution$Option == Info$Resolution, "Option"]
     if (length(Field) > 0 && Field == "Global-level") {
-      result$SubsetHCP <- db_hcp_per_region %>% select(-Country, -continentName)
-      result$SubsetE <- db_ithamaps_entries %>% select(-Country, -continentName)
+      result$SubsetHCP = db_hcp_per_region %>% select(-Country, -continentName)
+      result$SubsetE = db_ithamaps_entries %>% select(-Country, -continentName)
     }
     if (length(Field) > 0 && Field == "Continent-level") {
       if ("Continent" %in% names(Info) && !is.na(Info$Continent)) {
-        Field <- Continent[Continent$Option == Info$Continent, "Option"]
-        result$SubsetHCP <- db_hcp_per_region %>%
+        Field = Continent[Continent$Option == Info$Continent, "Option"]
+        result$SubsetHCP = db_hcp_per_region %>%
           filter(continentName == Field) %>%
           select(-Country, -continentName)
-        result$SubsetE <- db_ithamaps_entries %>%
+        result$SubsetE = db_ithamaps_entries %>%
           filter(continentName == Field) %>%
           select(-Country, -continentName)
       }
     }
     if (length(Field) > 0 && Field == "Country-level") {
       if ("Country" %in% names(Info) && !is.na(Info$Country)) {
-        Field <- Country[Country$Option == Info$Country, "Option"]
-        result$SubsetHCP <- db_hcp_per_region %>%
+        Field = Country[Country$Option == Info$Country, "Option"]
+        result$SubsetHCP = db_hcp_per_region %>%
           filter(Country == Field) %>%
           select(-Country, -continentName)
-        result$SubsetE <- db_ithamaps_entries %>%
+        result$SubsetE = db_ithamaps_entries %>%
           filter(Country == Field) %>%
           select(-Country, -continentName)
       }
     }
     result
   })
-  SubsetE <- resolution_result$SubsetE
-  SubsetHCP <- resolution_result$SubsetHCP
+  SubsetE = resolution_result$SubsetE
+  SubsetHCP = resolution_result$SubsetHCP
 
   # --- Parameter, Hemoglobinopathy, Globin phenotype, IthaID, Healthcare ---
-  parameter_result <- timed_call(timing_env, "parameter_filter", function() {
-    result <- list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
+  parameter_result = timed_call(timing_env, "parameter_filter", function() {
+    result = list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
 
     if (is.null(SubsetE) || !("Parameter" %in% names(Info)) || is.na(Info$Parameter)) {
       return(result)
     }
 
-    Field <- Parameter[Parameter$Option == Info$Parameter, "Option"]
+    Field = Parameter[Parameter$Option == Info$Parameter, "Option"]
     if (length(Field) > 0 && Field == "Healthcare availability") {
-      result$SubsetE <- NULL
+      result$SubsetE = NULL
       if ("HemoglobinopathyH" %in% names(Info) && !is.na(Info$HemoglobinopathyH)) {
-        Field <- HemoglobinopathyH[HemoglobinopathyH$Option == Info$HemoglobinopathyH, "Option"]
-        result$SubsetHCP <- result$SubsetHCP %>%
+        Field = HemoglobinopathyH[HemoglobinopathyH$Option == Info$HemoglobinopathyH, "Option"]
+        result$SubsetHCP = result$SubsetHCP %>%
           filter(cause_name == Field) %>%
           select(-cause_name)
         if ("Healthcare" %in% names(Info) && !is.na(Info$Healthcare)) {
-          Field <- Healthcare[Healthcare$Option == Info$Healthcare, "Option"]
-          result$SubsetHCP <- result$SubsetHCP %>%
+          Field = Healthcare[Healthcare$Option == Info$Healthcare, "Option"]
+          result$SubsetHCP = result$SubsetHCP %>%
             filter(hcp_name_ancestor == Field) %>%
             select(-hcp_name_ancestor)
           for (sn in 1:13) {
-            key <- paste0("HealthcareS", sn)
+            key = paste0("HealthcareS", sn)
             if (key %in% names(Info) && !is.na(Info[[key]])) {
-              HCS <- lookup[[key]]
-              Field <- HCS[HCS$Option == Info[[key]], "Option"]
-              result$SubsetHCP <- result$SubsetHCP %>%
+              HCS = lookup[[key]]
+              Field = HCS[HCS$Option == Info[[key]], "Option"]
+              result$SubsetHCP = result$SubsetHCP %>%
                 filter(hcp_name == Field) %>%
                 select(-hcp_name)
               break
@@ -1244,87 +1244,87 @@ build_query_bundle <- function(raw_qs) {
         }
       }
     } else if (length(Field) > 0) {
-      result$SubsetHCP <- NULL
-      result$SubsetE <- result$SubsetE %>%
+      result$SubsetHCP = NULL
+      result$SubsetE = result$SubsetE %>%
         filter(measure_name == Field) %>%
         select(-measure_name)
       if (Field == "Allele frequency") {
-        result$SubsetE <- result$SubsetE %>% select(-cause_name)
+        result$SubsetE = result$SubsetE %>% select(-cause_name)
         if ("GlobinPheAF" %in% names(Info) && !is.na(Info$GlobinPheAF)) {
-          Field <- GlobinPheAF[GlobinPheAF$Option == Info$GlobinPheAF, "Option"]
-          result$SubsetE <- result$SubsetE %>%
+          Field = GlobinPheAF[GlobinPheAF$Option == Info$GlobinPheAF, "Option"]
+          result$SubsetE = result$SubsetE %>%
             filter(globin_phenotype == Field) %>%
             select(-phenotype)
         }
       }
       if (Field == "Relative allele frequency") {
-        result$SubsetE <- result$SubsetE %>% select(-cause_name)
+        result$SubsetE = result$SubsetE %>% select(-cause_name)
         if ("VariantC" %in% names(Info) && !is.na(Info$VariantC)) {
-          vField <- VariantC[VariantC$Option == Info$VariantC, "Option"]
+          vField = VariantC[VariantC$Option == Info$VariantC, "Option"]
           if (vField == "Grouped variants by globin phenotype" &&
             "GlobinPheRAF" %in% names(Info) && !is.na(Info$GlobinPheRAF)) {
-            Field <- GlobinPheRAF[GlobinPheRAF$Option == Info$GlobinPheRAF, "Option"]
-            result$SubsetE <- result$SubsetE %>%
+            Field = GlobinPheRAF[GlobinPheRAF$Option == Info$GlobinPheRAF, "Option"]
+            result$SubsetE = result$SubsetE %>%
               filter(phenotype == Field) %>%
               select(-phenotype)
           }
           if (vField == "Individual variants" &&
             "IthaID" %in% names(Info) && !is.na(Info$IthaID)) {
-            Field <- IthaID[IthaID$Option == Info$IthaID, "Option"]
-            result$SubsetE <- result$SubsetE %>%
+            Field = IthaID[IthaID$Option == Info$IthaID, "Option"]
+            result$SubsetE = result$SubsetE %>%
               filter(ithaID == Field) %>%
               select(-phenotype)
           }
         }
       }
       if ("HemoglobinopathyC" %in% names(Info) && !is.na(Info$HemoglobinopathyC)) {
-        Field <- HemoglobinopathyC[HemoglobinopathyC$Option == Info$HemoglobinopathyC, "Option"]
-        result$SubsetE <- result$SubsetE %>%
+        Field = HemoglobinopathyC[HemoglobinopathyC$Option == Info$HemoglobinopathyC, "Option"]
+        result$SubsetE = result$SubsetE %>%
           filter(cause_name == Field) %>%
           select(-cause_name, -phenotype)
       }
       if ("HemoglobinopathyP" %in% names(Info) && !is.na(Info$HemoglobinopathyP)) {
-        Field <- HemoglobinopathyP[HemoglobinopathyP$Option == Info$HemoglobinopathyP, "Option"]
-        result$SubsetE <- result$SubsetE %>%
+        Field = HemoglobinopathyP[HemoglobinopathyP$Option == Info$HemoglobinopathyP, "Option"]
+        result$SubsetE = result$SubsetE %>%
           filter(cause_name == Field) %>%
           select(-cause_name, -phenotype)
       }
     }
     result
   })
-  SubsetE <- parameter_result$SubsetE
-  SubsetHCP <- parameter_result$SubsetHCP
+  SubsetE = parameter_result$SubsetE
+  SubsetHCP = parameter_result$SubsetHCP
 
   # --- Metric & Aggregation ---
   if (!is.null(SubsetE)) {
-    agg_level <- if ("Aggregation" %in% names(Info) && !is.na(Info$Aggregation)) {
+    agg_level = if ("Aggregation" %in% names(Info) && !is.na(Info$Aggregation)) {
       Aggregation[Aggregation$Option == Info$Aggregation, "Option"]
     } else {
       "Country-level"
     }
-    mField <- NULL
-    MetricN <- "Value"
+    mField = NULL
+    MetricN = "Value"
     if ("Metric" %in% names(Info) && !is.na(Info$Metric)) {
-      mField <- Metric[Metric$Option == Info$Metric, "Extra"]
-      MetricN <- Metric %>%
+      mField = Metric[Metric$Option == Info$Metric, "Extra"]
+      MetricN = Metric %>%
         filter(Extra == mField) %>%
         pull(Option)
     }
-    group_col <- switch(agg_level,
+    group_col = switch(agg_level,
       "Country-level"  = "geo_admin0",
       "Province-level" = "geo_admin1",
       "District-level" = "geo_admin2"
     )
-    timing_env[["group_prepare"]] <- 0
-    SubsetE <- timed_call(timing_env, "metric_compute", function() {
+    timing_env[["group_prepare"]] = 0
+    SubsetE = timed_call(timing_env, "metric_compute", function() {
       compute_outlier_aware_metric(SubsetE, group_col, mField)
     })
-    timing_env[["metric_finalize"]] <- 0
+    timing_env[["metric_finalize"]] = 0
 
-    SubsetE <- timed_call(timing_env, "geometry_finalize", function() {
-      idx0 <- match(SubsetE$geo_admin0, adm0_lookup$geo_admin0)
-      idx1 <- match(SubsetE$geo_admin1, adm1_lookup$geo_admin1)
-      idx2 <- match(SubsetE$geo_admin2, adm2_lookup$geo_admin2)
+    SubsetE = timed_call(timing_env, "geometry_finalize", function() {
+      idx0 = match(SubsetE$geo_admin0, adm0_lookup$geo_admin0)
+      idx1 = match(SubsetE$geo_admin1, adm1_lookup$geo_admin1)
+      idx2 = match(SubsetE$geo_admin2, adm2_lookup$geo_admin2)
 
       SubsetE %>%
         mutate(
@@ -1334,7 +1334,7 @@ build_query_bundle <- function(raw_qs) {
         )
     })
 
-    polygon_keys <- timed_call(timing_env, "polygon_subset", function() {
+    polygon_keys = timed_call(timing_env, "polygon_subset", function() {
       if (agg_level == "Country-level") {
         SubsetE %>%
           dplyr::select(geo_admin0, Metric) %>%
@@ -1350,9 +1350,9 @@ build_query_bundle <- function(raw_qs) {
       }
     })
 
-    SubsetG <- timed_call(timing_env, "geometry_join", function() {
+    SubsetG = timed_call(timing_env, "geometry_join", function() {
       if (agg_level == "Country-level") {
-        idx0 <- match(polygon_keys$geo_admin0, adm0_sel$geo_admin0)
+        idx0 = match(polygon_keys$geo_admin0, adm0_sel$geo_admin0)
         st_as_sf(
           polygon_keys %>% mutate(
             Region = adm0_lookup$Region[idx0],
@@ -1363,8 +1363,8 @@ build_query_bundle <- function(raw_qs) {
           sf_column_name = "geom"
         )
       } else if (agg_level == "Province-level") {
-        idx0 <- match(polygon_keys$geo_admin0, adm0_lookup$geo_admin0)
-        idx1 <- match(polygon_keys$geo_admin1, adm1_sel$geo_admin1)
+        idx0 = match(polygon_keys$geo_admin0, adm0_lookup$geo_admin0)
+        idx1 = match(polygon_keys$geo_admin1, adm1_sel$geo_admin1)
         st_as_sf(
           polygon_keys %>% mutate(
             Region = adm0_lookup$Region[idx0],
@@ -1375,9 +1375,9 @@ build_query_bundle <- function(raw_qs) {
           sf_column_name = "geom"
         )
       } else {
-        idx0 <- match(polygon_keys$geo_admin0, adm0_lookup$geo_admin0)
-        idx1 <- match(polygon_keys$geo_admin1, adm1_lookup$geo_admin1)
-        idx2 <- match(polygon_keys$geo_admin2, adm2_sel$geo_admin2)
+        idx0 = match(polygon_keys$geo_admin0, adm0_lookup$geo_admin0)
+        idx1 = match(polygon_keys$geo_admin1, adm1_lookup$geo_admin1)
+        idx2 = match(polygon_keys$geo_admin2, adm2_sel$geo_admin2)
         st_as_sf(
           polygon_keys %>% mutate(
             Region = adm0_lookup$Region[idx0],
@@ -1392,52 +1392,52 @@ build_query_bundle <- function(raw_qs) {
   }
 
   if (!is.null(SubsetHCP) && nrow(SubsetHCP) > 0) {
-    SubsetHCP <- timed_call(timing_env, "healthcare_harmonize", function() {
+    SubsetHCP = timed_call(timing_env, "healthcare_harmonize", function() {
       harmonize_healthcare_subset(SubsetHCP)
     })
   }
 
-  timing_env[["total_query_bundle"]] <- round(proc.time()[["elapsed"]] - total_start, 3)
+  timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
 
   list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, timings = timing_list(timing_env))
 }
 
-build_query_bundle_cached <- function(raw_qs) {
-  cache_key <- paste(query_bundle_cache_version, normalize_query_string(raw_qs), sep = "::")
+build_query_bundle_cached = function(raw_qs) {
+  cache_key = paste(query_bundle_cache_version, normalize_query_string(raw_qs), sep = "::")
 
-  bundle_has_timings <- function(bundle) {
+  bundle_has_timings = function(bundle) {
     is.list(bundle) && is.list(bundle$timings) && length(bundle$timings) > 0
   }
 
   if (exists(cache_key, envir = query_bundle_cache, inherits = FALSE)) {
-    bundle <- get(cache_key, envir = query_bundle_cache, inherits = FALSE)
+    bundle = get(cache_key, envir = query_bundle_cache, inherits = FALSE)
     if (!bundle_has_timings(bundle)) {
       rm(list = cache_key, envir = query_bundle_cache)
     } else {
-      bundle$timings$cache_hit <- TRUE
-      bundle$timings$cache_lookup <- 0
+      bundle$timings$cache_hit = TRUE
+      bundle$timings$cache_lookup = 0
       return(bundle)
     }
   }
 
-  cache_start <- proc.time()[["elapsed"]]
-  bundle <- build_query_bundle(raw_qs)
+  cache_start = proc.time()[["elapsed"]]
+  bundle = build_query_bundle(raw_qs)
 
   # Leaflet polygon layers require sf/spatial input. Ensure the aggregated
   # polygon payload preserves sf class before caching.
   if (!is.null(bundle$SubsetG) && !inherits(bundle$SubsetG, "sf") && "geom" %in% names(bundle$SubsetG)) {
-    bundle$SubsetG <- st_as_sf(bundle$SubsetG)
+    bundle$SubsetG = st_as_sf(bundle$SubsetG)
   }
 
-  bundle$timings$cache_hit <- FALSE
-  bundle$timings$cache_lookup <- round(proc.time()[["elapsed"]] - cache_start, 3)
+  bundle$timings$cache_hit = FALSE
+  bundle$timings$cache_lookup = round(proc.time()[["elapsed"]] - cache_start, 3)
 
   assign(cache_key, bundle, envir = query_bundle_cache)
   bundle
 }
 
 # Generate shiny app
-ui <- fluidPage(
+ui = fluidPage(
   theme = bs_theme(version = 5, bootswatch = "litera"),
   tags$style(HTML(".dataTables_wrapper .dataTables_filter,
                                  .dataTables_wrapper .dataTables_length,
@@ -1477,16 +1477,16 @@ ui <- fluidPage(
 )
 
 
-server <- function(input, output, session) {
-  perf_state <- reactiveValues(map_render_secs = NULL, table_render_secs = NULL)
-  trace_env <- new.env(parent = emptyenv())
-  trace_env$bundle_builds <- 0L
-  trace_env$last_qs <- NA_character_
+server = function(input, output, session) {
+  perf_state = reactiveValues(map_render_secs = NULL, table_render_secs = NULL)
+  trace_env = new.env(parent = emptyenv())
+  trace_env$bundle_builds = 0L
+  trace_env$last_qs = NA_character_
 
-  log_trace <- function(event, details = "") {
-    sid <- substr(session$token %||% "unknown", 1, 8)
-    ts <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
-    prefix <- paste0("[ithamaps-trace][", ts, "][sid=", sid, "][", event, "]")
+  log_trace = function(event, details = "") {
+    sid = substr(session$token %||% "unknown", 1, 8)
+    ts = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    prefix = paste0("[ithamaps-trace][", ts, "][sid=", sid, "][", event, "]")
     if (nchar(details) > 0) {
       cat(prefix, details, "\n")
     } else {
@@ -1495,8 +1495,8 @@ server <- function(input, output, session) {
     flush.console()
   }
 
-  startup_ua <- substr(session$request$HTTP_USER_AGENT %||% "", 1, 140)
-  startup_ref <- substr(session$request$HTTP_REFERER %||% "", 1, 140)
+  startup_ua = substr(session$request$HTTP_USER_AGENT %||% "", 1, 140)
+  startup_ref = substr(session$request$HTTP_REFERER %||% "", 1, 140)
   log_trace("session_start", paste0("ua='", startup_ua, "' ref='", startup_ref, "'"))
 
   session$onSessionEnded(function() {
@@ -1504,30 +1504,30 @@ server <- function(input, output, session) {
   })
 
   observeEvent(session$clientData$url_search, {
-    current_qs <- normalize_query_string(session$clientData$url_search %||% "")
+    current_qs = normalize_query_string(session$clientData$url_search %||% "")
     if (is.na(trace_env$last_qs)) {
       log_trace("url_search_init", paste0("qs='", current_qs, "'"))
-      trace_env$last_qs <- current_qs
+      trace_env$last_qs = current_qs
       return()
     }
     if (!identical(current_qs, trace_env$last_qs)) {
       log_trace("url_search_change", paste0("from='", trace_env$last_qs, "' to='", current_qs, "'"))
-      trace_env$last_qs <- current_qs
+      trace_env$last_qs = current_qs
     }
   }, ignoreInit = FALSE)
 
   # Build data bundle from the current URL query string
-  query_bundle <- reactive({
-    raw_qs <- session$clientData$url_search %||% ""
-    fetch_start <- proc.time()[["elapsed"]]
-    bundle <- build_query_bundle_cached(raw_qs)
-    bundle$timings <- bundle$timings %||% list()
-    bundle$timings$bundle_fetch <- round(proc.time()[["elapsed"]] - fetch_start, 3)
-    bundle$timings$query_string <- normalize_query_string(raw_qs)
+  query_bundle = reactive({
+    raw_qs = session$clientData$url_search %||% ""
+    fetch_start = proc.time()[["elapsed"]]
+    bundle = build_query_bundle_cached(raw_qs)
+    bundle$timings = bundle$timings %||% list()
+    bundle$timings$bundle_fetch = round(proc.time()[["elapsed"]] - fetch_start, 3)
+    bundle$timings$query_string = normalize_query_string(raw_qs)
 
-    trace_env$bundle_builds <- trace_env$bundle_builds + 1L
+    trace_env$bundle_builds = trace_env$bundle_builds + 1L
     if (trace_env$bundle_builds <= 5L || trace_env$bundle_builds %% 10L == 0L) {
-      cache_hit <- if (isTRUE(bundle$timings$cache_hit)) "yes" else "no"
+      cache_hit = if (isTRUE(bundle$timings$cache_hit)) "yes" else "no"
       log_trace(
         "query_bundle_build",
         paste0(
@@ -1541,67 +1541,67 @@ server <- function(input, output, session) {
     bundle
   })
 
-  SubsetE_r <- reactive({
+  SubsetE_r = reactive({
     query_bundle()$SubsetE
   })
-  SubsetHCP_r <- reactive({
+  SubsetHCP_r = reactive({
     query_bundle()$SubsetHCP
   })
-  DataType_r <- reactive({
+  DataType_r = reactive({
     query_bundle()$DataType %||% "Curated data"
   })
-  is_prediction_mode <- reactive({
+  is_prediction_mode = reactive({
     identical(DataType_r(), "Prediction data")
   })
-  prediction_data_r <- reactive({
+  prediction_data_r = reactive({
     query_bundle()$prediction
   })
-  is_hcp_mode <- reactive({
-    hcp <- SubsetHCP_r()
+  is_hcp_mode = reactive({
+    hcp = SubsetHCP_r()
     !is.null(hcp) && nrow(hcp) > 0
   })
-  SubsetG_r <- reactive({
-    b <- query_bundle()
+  SubsetG_r = reactive({
+    b = query_bundle()
     if (!is.null(b$SubsetG) && !inherits(b$SubsetG, "sf") && "geom" %in% names(b$SubsetG)) {
       st_as_sf(b$SubsetG)
     } else {
       b$SubsetG
     }
   })
-  MetricN_r <- reactive({
+  MetricN_r = reactive({
     query_bundle()$MetricN
   })
-  timing_info_r <- reactive({
+  timing_info_r = reactive({
     query_bundle()$timings %||% list()
   })
 
-  data_available <- reactive({
+  data_available = reactive({
     if (is_prediction_mode()) {
       return(TRUE)
     }
-    se <- SubsetE_r()
-    hcp <- SubsetHCP_r()
+    se = SubsetE_r()
+    hcp = SubsetHCP_r()
     (!is.null(se) && nrow(se) > 0) || (!is.null(hcp) && nrow(hcp) > 0)
   })
 
-  filtered_data <- reactive({
+  filtered_data = reactive({
     req(!is_prediction_mode())
     req(data_available())
     if (is_hcp_mode()) {
-      SubsetHCP <- SubsetHCP_r()
+      SubsetHCP = SubsetHCP_r()
       if (!is.null(input$data_table_rows_all)) SubsetHCP[input$data_table_rows_all, ] else SubsetHCP
     } else {
-      SubsetE <- SubsetE_r()
+      SubsetE = SubsetE_r()
       if (!is.null(input$data_table_rows_all)) SubsetE[input$data_table_rows_all, ] else SubsetE
     }
   })
 
-  selected_marker_idx <- reactiveVal(NULL)
-  selected_shape_idx <- reactiveVal(NULL)
-  selected_row <- reactiveVal(NULL)
-  selected_prediction_point <- reactiveVal(NULL)
+  selected_marker_idx = reactiveVal(NULL)
+  selected_shape_idx = reactiveVal(NULL)
+  selected_row = reactiveVal(NULL)
+  selected_prediction_point = reactiveVal(NULL)
 
-  output$main_content <- renderUI({
+  output$main_content = renderUI({
     if (is_prediction_mode()) {
       # Ported from IthaMaps-shinyapp/app.R lines 489-513 and 757-851:
       # render the dedicated prediction-mode four-map layout and export actions.
@@ -1690,15 +1690,15 @@ server <- function(input, output, session) {
     )
   })
 
-  selected_parameters_r <- reactive({
-    raw_qs <- session$clientData$url_search %||% ""
-    Query <- Extract(Parse(raw_qs))
+  selected_parameters_r = reactive({
+    raw_qs = session$clientData$url_search %||% ""
+    Query = Extract(Parse(raw_qs))
 
     if (length(Query) == 0) {
       return(data.frame(Parameter = character(), Selection = character(), stringsAsFactors = FALSE))
     }
 
-    lookup <- list(
+    lookup = list(
       DataType = DataType, Resolution = Resolution, Continent = Continent, Country = Country,
       Parameter = Parameter, HemoglobinopathyH = HemoglobinopathyH,
       HemoglobinopathyC = HemoglobinopathyC, HemoglobinopathyP = HemoglobinopathyP,
@@ -1711,23 +1711,23 @@ server <- function(input, output, session) {
       GlobinPheRAF = GlobinPheRAF, IthaID = IthaID, Metric = Metric, Aggregation = Aggregation
     )
 
-    preferred_order <- c(
+    preferred_order = c(
       "DataType", "Resolution", "Continent", "Country", "Parameter",
       "HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP",
       "Healthcare", paste0("HealthcareS", 1:13),
       "GlobinPheAF", "VariantC", "GlobinPheRAF", "IthaID", "Metric", "Aggregation"
     )
-    keys <- preferred_order[preferred_order %in% names(Query)]
-    extra_keys <- setdiff(names(Query), keys)
-    keys <- c(keys, extra_keys)
+    keys = preferred_order[preferred_order %in% names(Query)]
+    extra_keys = setdiff(names(Query), keys)
+    keys = c(keys, extra_keys)
 
-    rows <- lapply(keys, function(key) {
-      id_val <- Query[[key]]
-      selection <- as.character(id_val)
+    rows = lapply(keys, function(key) {
+      id_val = Query[[key]]
+      selection = as.character(id_val)
       if (key %in% names(lookup)) {
-        opt <- suppressWarnings(Search(key, id_val, lookup[[key]]))
+        opt = suppressWarnings(Search(key, id_val, lookup[[key]]))
         if (!is.na(opt)[1]) {
-          selection <- as.character(opt[[1]])
+          selection = as.character(opt[[1]])
         }
       }
       data.frame(Parameter = key, Selection = selection, stringsAsFactors = FALSE)
@@ -1736,36 +1736,36 @@ server <- function(input, output, session) {
     bind_rows(rows)
   })
 
-  summary_panel_r <- reactive({
-    params_df <- selected_parameters_r()
+  summary_panel_r = reactive({
+    params_df = selected_parameters_r()
 
-    get_param_selection <- function(name) {
-      hit <- params_df$Selection[params_df$Parameter == name]
+    get_param_selection = function(name) {
+      hit = params_df$Selection[params_df$Parameter == name]
       if (length(hit) == 0) {
         return(NA_character_)
       }
       as.character(hit[[1]])
     }
 
-    before_count <- if (is_hcp_mode()) {
-      hcp <- SubsetHCP_r()
+    before_count = if (is_hcp_mode()) {
+      hcp = SubsetHCP_r()
       if (is.null(hcp)) 0 else nrow(hcp)
     } else if (is_prediction_mode()) {
-      assets <- prediction_data_r()
+      assets = prediction_data_r()
       if (is.null(assets)) 0 else raster::ncell(assets$Mean)
     } else {
-      se <- SubsetE_r()
+      se = SubsetE_r()
       if (is.null(se)) 0 else nrow(se)
     }
-    after_count <- if (is_prediction_mode()) {
-      assets <- prediction_data_r()
+    after_count = if (is_prediction_mode()) {
+      assets = prediction_data_r()
       if (is.null(assets)) 0 else nrow(assets$Selected_sites)
     } else if (isTRUE(data_available())) {
       nrow(filtered_data())
     } else {
       0
     }
-    mode_label <- if (is_prediction_mode()) {
+    mode_label = if (is_prediction_mode()) {
       "Prediction data"
     } else if (is_hcp_mode()) {
       "Healthcare availability"
@@ -1773,7 +1773,7 @@ server <- function(input, output, session) {
       "Curated data"
     }
 
-    summary_df <- bind_rows(
+    summary_df = bind_rows(
       data.frame(
         Parameter = c("Data mode", "Total records", "Shown records"),
         Selection = c(mode_label, as.character(before_count), as.character(after_count)),
@@ -1782,23 +1782,23 @@ server <- function(input, output, session) {
       params_df
     )
 
-    metric_table_html <- ""
-    resolution_sel <- get_param_selection("Resolution")
-    aggregation_sel <- get_param_selection("Aggregation")
-    metric_name_sel <- get_param_selection("Metric")
+    metric_table_html = ""
+    resolution_sel = get_param_selection("Resolution")
+    aggregation_sel = get_param_selection("Aggregation")
+    metric_name_sel = get_param_selection("Metric")
     if (!is_hcp_mode() && identical(resolution_sel, "Country-level") && identical(aggregation_sel, "Country-level")) {
-      sg <- SubsetG_r()
-      metric_values <- if (is.null(sg) || !("Metric" %in% names(sg))) numeric(0) else as.numeric(sg$Metric)
-      metric_values <- metric_values[!is.na(metric_values)]
-      metric_value_label <- if (length(metric_values) == 0) {
+      sg = SubsetG_r()
+      metric_values = if (is.null(sg) || !("Metric" %in% names(sg))) numeric(0) else as.numeric(sg$Metric)
+      metric_values = metric_values[!is.na(metric_values)]
+      metric_value_label = if (length(metric_values) == 0) {
         "N/A"
       } else if (length(unique(metric_values)) == 1) {
         as.character(round(unique(metric_values)[1], 2))
       } else {
         paste0("Multiple (", length(unique(metric_values)), ")")
       }
-      metric_name_label <- if (is.na(metric_name_sel) || !nzchar(metric_name_sel)) "Metric" else metric_name_sel
-      metric_table_html <- paste0(
+      metric_name_label = if (is.na(metric_name_sel) || !nzchar(metric_name_sel)) "Metric" else metric_name_sel
+      metric_table_html = paste0(
         "<h5 style='margin:8px 0 4px 0;'>Metric calculation</h5>",
         "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
         "<tr><td style='padding:2px 4px; vertical-align:top; background:#f9f9f9; color:#333; font-weight:600; width:42%; white-space:nowrap; border: 1px solid #ddd;'>Metric</td>",
@@ -1809,7 +1809,7 @@ server <- function(input, output, session) {
       )
     }
 
-    table_html <- paste0(
+    table_html = paste0(
       "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
       "<h4 style='margin-bottom:6px;'>Selected query summary</h4>",
       "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
@@ -1841,10 +1841,10 @@ server <- function(input, output, session) {
   observe({
     req(!is_prediction_mode())
     req(selected_row())
-    proxy <- leafletProxy("map", data = filtered_data())
+    proxy = leafletProxy("map", data = filtered_data())
     proxy %>% clearGroup("highlight")
     if (!is.null(selected_row())) {
-      data <- filtered_data()[selected_row(), ]
+      data = filtered_data()[selected_row(), ]
       proxy %>%
         addCircleMarkers(
           data = data,
@@ -1860,29 +1860,29 @@ server <- function(input, output, session) {
     }
   })
 
-  popup_contentA_r <- reactive({
+  popup_contentA_r = reactive({
     req(!is_prediction_mode())
     req(data_available())
-    SubsetG <- SubsetG_r()
+    SubsetG = SubsetG_r()
     if (is.null(SubsetG)) {
       return(list())
     }
     lapply(1:nrow(SubsetG), function(i) {
-      fields <- c("Country", "Province", "District", "Value")
-      values <- c(
+      fields = c("Country", "Province", "District", "Value")
+      values = c(
         SubsetG$Region[i],
         SubsetG$Region1[i],
         SubsetG$Region2[i],
         SubsetG$Metric[i]
       )
       if (length(values) == 0) {
-        df <- data.frame(Field = character(), Value = character())
+        df = data.frame(Field = character(), Value = character())
       } else {
-        df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
-        df <- df[df$Value != "" & !is.na(df$Value), , drop = FALSE]
+        df = data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
+        df = df[df$Value != "" & !is.na(df$Value), , drop = FALSE]
       }
       if (nrow(df) > 0) {
-        table_html <- paste0(
+        table_html = paste0(
           "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
           "<h4 style='margin-bottom:6px;'>Aggregated value details</h4>",
           "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
@@ -1901,20 +1901,20 @@ server <- function(input, output, session) {
     })
   })
 
-  popup_content_r <- reactive({
+  popup_content_r = reactive({
     req(!is_prediction_mode())
     req(data_available())
     if (is_hcp_mode()) {
-      SubsetHCP <- SubsetHCP_r()
-      idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
-      country_names <- adm0_lookup$Region[idx0]
+      SubsetHCP = SubsetHCP_r()
+      idx0 = match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+      country_names = adm0_lookup$Region[idx0]
       lapply(seq_len(nrow(SubsetHCP)), function(i) {
-        fields <- c(
+        fields = c(
           "Country", "Availability", "Study period", "Known implementation timeframe",
           "Eligibility", "Implementation", "Application", "Compensation",
           "Diagnostic method", "Uptake", "Recruitment site", "Notes", "Source"
         )
-        values <- c(
+        values = c(
           country_names[i],
           SubsetHCP$Availability[i],
           SubsetHCP$timeframe[i],
@@ -1929,9 +1929,9 @@ server <- function(input, output, session) {
           SubsetHCP$note[i],
           SubsetHCP$citation_str[i]
         )
-        df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
-        df <- df[df$Value != "" & !is.na(df$Value) & df$Value != "Unspecified" & df$Value != "Not applicable", ]
-        table_html <- paste0(
+        df = data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
+        df = df[df$Value != "" & !is.na(df$Value) & df$Value != "Unspecified" & df$Value != "Not applicable", ]
+        table_html = paste0(
           "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
           "<h4 style='margin-bottom:6px;'>Healthcare policy details</h4>",
           "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
@@ -1946,14 +1946,14 @@ server <- function(input, output, session) {
         HTML(table_html)
       })
     } else {
-      SubsetE <- SubsetE_r()
+      SubsetE = SubsetE_r()
       lapply(1:nrow(SubsetE), function(i) {
-        fields <- c(
+        fields = c(
           "Country", "Province", "District", "Value", "Study period", "Risk of bias", "Globin phenotype", "IthaID",
           "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
           "Sex", "Age", "Consanguinity", "Diagnostic method", "Recruitment site", "Coordinates", "Notes", "Source"
         )
-        values <- c(
+        values = c(
           SubsetE$Region[i], SubsetE$Region1[i], SubsetE$Region2[i], SubsetE$value[i], SubsetE$timeframe[i],
           SubsetE$bias_flag[i], SubsetE$globin_phenotype[i], SubsetE$ithaID[i], SubsetE$sample_size[i],
           SubsetE$count[i], SubsetE$status_group[i], SubsetE$nationality[i], SubsetE$ethnicity_name[i],
@@ -1962,9 +1962,9 @@ server <- function(input, output, session) {
           paste0("(", round(as.numeric(SubsetE$latitude[i]), 4), ", ", round(as.numeric(SubsetE$longitude[i]), 4), ")"),
           SubsetE$note[i], SubsetE$citation_str[i]
         )
-        df <- data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
-        df <- df[df$Value != "" & !is.na(df$Value), ]
-        table_html <- paste0(
+        df = data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
+        df = df[df$Value != "" & !is.na(df$Value), ]
+        table_html = paste0(
           "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
           "<h4 style='margin-bottom:6px;'>Study details</h4>",
           "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
@@ -1981,22 +1981,22 @@ server <- function(input, output, session) {
     }
   })
 
-  pal_metric_r <- reactive({
+  pal_metric_r = reactive({
     req(!is_prediction_mode())
     req(data_available())
     if (is_hcp_mode()) {
       return(NULL)
     }
-    SubsetG <- SubsetG_r()
-    viridis_palette <- viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1)
-    metric_values <- SubsetG$Metric
-    unique_vals <- unique(metric_values)
+    SubsetG = SubsetG_r()
+    viridis_palette = viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1)
+    metric_values = SubsetG$Metric
+    unique_vals = unique(metric_values)
     if (length(unique_vals) == 1) {
       # Expand domain so the legend can render a continuous scale.
       # Use 0 as lower bound (natural for prevalence/frequency data);
       # fall back to a unit interval when the single value is itself 0.
-      lower <- if (unique_vals[1] > 0) 0 else -1
-      expanded <- c(lower, unique_vals[1])
+      lower = if (unique_vals[1] > 0) 0 else -1
+      expanded = c(lower, unique_vals[1])
       list(
         pal         = colorNumeric(palette = viridis_palette, domain = expanded),
         legend_vals = expanded
@@ -2011,24 +2011,24 @@ server <- function(input, output, session) {
 
   # Ported from IthaMaps-shinyapp/app.R lines 513-722: build prediction-mode
   # legends, synchronized map behaviour, and click-based raster interrogation.
-  sync_js <- "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95', 'map_burden', 'map_ci95_2']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
+  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95', 'map_burden', 'map_ci95_2']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
 
   # Shared prediction-map options prevent extreme zoom-out tile requests that can
   # render broken-image placeholders near the map edge while keeping sync behaviour.
-  prediction_leaflet_options <- leafletOptions(
+  prediction_leaflet_options = leafletOptions(
     worldCopyJump = FALSE,
     minZoom = 1,
     scrollWheelZoom = FALSE,
     zoomControl = TRUE
   )
 
-  default_leaflet_options <- leafletOptions(
+  default_leaflet_options = leafletOptions(
     scrollWheelZoom = FALSE,
     zoomControl = TRUE
   )
 
-  prediction_legend_bar <- function(palette_values, title, min_value, max_value) {
-    gradient <- paste0(palette_values, collapse = ", ")
+  prediction_legend_bar = function(palette_values, title, min_value, max_value) {
+    gradient = paste0(palette_values, collapse = ", ")
     HTML(paste0(
       "<div class='raster-legend'><div class='raster-legend-title'>", title, "</div>",
       "<div class='raster-legend-bar' style='background: linear-gradient(to right, ", gradient, ");'></div>",
@@ -2036,38 +2036,38 @@ server <- function(input, output, session) {
     ))
   }
 
-  lookup_prediction_admin <- function(id, lookup_table, id_col, name_col) {
+  lookup_prediction_admin = function(id, lookup_table, id_col, name_col) {
     if (is.null(id) || is.na(id)) {
       return("No data")
     }
-    matched_name <- lookup_table[[name_col]][match(id, lookup_table[[id_col]])]
+    matched_name = lookup_table[[name_col]][match(id, lookup_table[[id_col]])]
     if (length(matched_name) == 0 || is.na(matched_name)) {
       return("No data")
     }
     matched_name
   }
 
-  extract_prediction_values <- function(lng, lat) {
-    assets <- prediction_data_r()
+  extract_prediction_values = function(lng, lat) {
+    assets = prediction_data_r()
     req(!is.null(assets))
 
-    point_sf <- sf::st_as_sf(
+    point_sf = sf::st_as_sf(
       data.frame(Longitude = lng, Latitude = lat),
       coords = c("Longitude", "Latitude"),
       crs = 4326,
       remove = FALSE
     )
-    point_for_raster <- point_sf %>% sf::st_transform(raster::crs(assets$Mean))
-    point_sp <- as(point_for_raster, "Spatial")
+    point_for_raster = point_sf %>% sf::st_transform(raster::crs(assets$Mean))
+    point_sp = as(point_for_raster, "Spatial")
 
-    clicked_mean <- raster::extract(assets$Mean_admin, point_sp)
-    clicked_ci95 <- raster::extract(assets$CI95, point_sp)
-    clicked_burden <- raster::extract(assets$Burden, point_sp)
-    clicked_admin <- clicked_mean[, c("geo_admin0_raster", "geo_admin1_raster", "geo_admin2_raster"), drop = FALSE]
+    clicked_mean = raster::extract(assets$Mean_admin, point_sp)
+    clicked_ci95 = raster::extract(assets$CI95, point_sp)
+    clicked_burden = raster::extract(assets$Burden, point_sp)
+    clicked_admin = clicked_mean[, c("geo_admin0_raster", "geo_admin1_raster", "geo_admin2_raster"), drop = FALSE]
 
-    geo_admin0_raster <- clicked_admin[, "geo_admin0_raster"]
-    geo_admin1_raster <- clicked_admin[, "geo_admin1_raster"]
-    geo_admin2_raster <- clicked_admin[, "geo_admin2_raster"]
+    geo_admin0_raster = clicked_admin[, "geo_admin0_raster"]
+    geo_admin1_raster = clicked_admin[, "geo_admin1_raster"]
+    geo_admin2_raster = clicked_admin[, "geo_admin2_raster"]
 
     data.frame(
       Longitude = lng,
@@ -2084,9 +2084,9 @@ server <- function(input, output, session) {
     )
   }
 
-  update_selected_prediction_point <- function(click) {
+  update_selected_prediction_point = function(click) {
     req(click$lng, click$lat)
-    values <- extract_prediction_values(click$lng, click$lat)
+    values = extract_prediction_values(click$lng, click$lat)
     selected_prediction_point(values)
 
     for (map_id in c("map_mean", "map_ci95", "map_burden", "map_ci95_2")) {
@@ -2105,23 +2105,23 @@ server <- function(input, output, session) {
     }
   }
 
-  current_prediction_extent <- reactive({
-    assets <- prediction_data_r()
+  current_prediction_extent = reactive({
+    assets = prediction_data_r()
     req(!is.null(assets))
-    bounds <- input$map_mean_bounds
+    bounds = input$map_mean_bounds
     if (is.null(bounds)) {
       return(raster::extent(assets$Mean))
     }
     raster::extent(bounds$west, bounds$east, bounds$south, bounds$north)
   })
 
-  prediction_disclaimer_html <- reactive({
+  prediction_disclaimer_html = reactive({
     req(is_prediction_mode())
-    query_info <- query_bundle()$query_info %||% list()
+    query_info = query_bundle()$query_info %||% list()
 
-    requested_resolution <- as.character(query_info$Resolution %||% "Not provided")
-    requested_parameter <- as.character(query_info$Parameter %||% "Not provided")
-    requested_cause <- as.character(
+    requested_resolution = as.character(query_info$Resolution %||% "Not provided")
+    requested_parameter = as.character(query_info$Parameter %||% "Not provided")
+    requested_cause = as.character(
       query_info$HemoglobinopathyP %||%
         query_info$HemoglobinopathyC %||%
         query_info$HemoglobinopathyH %||%
@@ -2143,43 +2143,43 @@ server <- function(input, output, session) {
     ))
   })
 
-  output$mean_legend <- renderUI({
+  output$mean_legend = renderUI({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     prediction_legend_bar(rev(assets$Mean_colours), "Predicted mean carrier prevalence (%)", assets$Mean_min, assets$Mean_max)
   })
 
-  output$ci95_legend <- renderUI({
+  output$ci95_legend = renderUI({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     prediction_legend_bar(rev(assets$CI95_colours), "Prediction uncertainty (95% Credible Interval)", assets$CI95_min, assets$CI95_max)
   })
 
-  output$burden_legend <- renderUI({
+  output$burden_legend = renderUI({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     prediction_legend_bar(rev(assets$Burden_colours), "Estimated number of carriers", assets$Burden_min, assets$Burden_max)
   })
 
-  output$ci95_legend_2 <- renderUI({
+  output$ci95_legend_2 = renderUI({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     prediction_legend_bar(rev(assets$CI95_colours), "Prediction uncertainty (95% Credible Interval)", assets$CI95_min, assets$CI95_max)
   })
 
-  output$selected_prediction_values <- renderUI({
+  output$selected_prediction_values = renderUI({
     req(is_prediction_mode())
-    disclaimer <- prediction_disclaimer_html()
-    values <- selected_prediction_point()
+    disclaimer = prediction_disclaimer_html()
+    values = selected_prediction_point()
     if (is.null(values)) {
       return(tagList(
         disclaimer,
         HTML("<strong>Tip:</strong> Click any map to display the mean predicted carrier prevalence, prediction uncertainty, and estimated number of carriers at the selected location.")
       ))
     }
-    mean_value <- ifelse(is.na(values$Mean), "No data", round(values$Mean, 4))
-    ci95_value <- ifelse(is.na(values$CI95), "No data", round(values$CI95, 4))
-    burden_value <- ifelse(is.na(values$Burden), "No data", round(values$Burden, 4))
+    mean_value = ifelse(is.na(values$Mean), "No data", round(values$Mean, 4))
+    ci95_value = ifelse(is.na(values$CI95), "No data", round(values$CI95, 4))
+    burden_value = ifelse(is.na(values$Burden), "No data", round(values$Burden, 4))
     tagList(
       disclaimer,
       HTML(paste0(
@@ -2196,9 +2196,9 @@ server <- function(input, output, session) {
     )
   })
 
-  output$map_mean <- renderLeaflet({
+  output$map_mean = renderLeaflet({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
@@ -2208,9 +2208,9 @@ server <- function(input, output, session) {
       htmlwidgets::onRender(sync_js)
   })
 
-  output$map_ci95 <- renderLeaflet({
+  output$map_ci95 = renderLeaflet({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
@@ -2220,9 +2220,9 @@ server <- function(input, output, session) {
       htmlwidgets::onRender(sync_js)
   })
 
-  output$map_burden <- renderLeaflet({
+  output$map_burden = renderLeaflet({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
     #leaflet(width = 1300, height = 750, options = leafletOptions(worldCopyJump = FALSE, minZoom = 2)) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
@@ -2233,9 +2233,9 @@ server <- function(input, output, session) {
       htmlwidgets::onRender(sync_js)
   })
 
-  output$map_ci95_2 <- renderLeaflet({
+  output$map_ci95_2 = renderLeaflet({
     req(is_prediction_mode())
-    assets <- prediction_data_r()
+    assets = prediction_data_r()
     # options worldCopyJump = FALSE prevents the map from creating a duplicate set of tiles when the user pans across the antimeridian, which would cause confusion when interpreting the raster and clicking to interrogate values.
     leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
@@ -2286,14 +2286,14 @@ server <- function(input, output, session) {
     update_selected_prediction_point(input$map_ci95_2_marker_click)
   })
 
-  output$map <- renderLeaflet({
+  output$map = renderLeaflet({
     req(!is_prediction_mode())
     req(data_available())
-    render_start <- proc.time()[["elapsed"]]
+    render_start = proc.time()[["elapsed"]]
 
     if (is_hcp_mode()) {
-      data <- SubsetHCP_r()
-      map_widget <- leaflet(options = default_leaflet_options) %>%
+      data = SubsetHCP_r()
+      map_widget = leaflet(options = default_leaflet_options) %>%
         addProviderTiles("CartoDB.Positron") %>%
         addScaleBar(position = "bottomleft") %>%
         addCircleMarkers(
@@ -2323,18 +2323,18 @@ server <- function(input, output, session) {
 
                                                                                      // Highlight on hover
                                                                                      map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'steelblue', fillColor: 'steelblue'});});}});}")
-      perf_state$map_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+      perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(map_widget)
     }
 
-    SubsetG <- SubsetG_r()
-    MetricN <- MetricN_r()
-    pal_metric_obj <- pal_metric_r()
-    pal_metric <- pal_metric_obj$pal
-    legend_vals <- pal_metric_obj$legend_vals
-    data <- filtered_data()
+    SubsetG = SubsetG_r()
+    MetricN = MetricN_r()
+    pal_metric_obj = pal_metric_r()
+    pal_metric = pal_metric_obj$pal
+    legend_vals = pal_metric_obj$legend_vals
+    data = filtered_data()
 
-    map_widget <- leaflet(data, options = default_leaflet_options) %>%
+    map_widget = leaflet(data, options = default_leaflet_options) %>%
       addProviderTiles("CartoDB.Positron") %>%
       addScaleBar(position = "bottomleft") %>%
       addCircleMarkers(
@@ -2387,19 +2387,19 @@ server <- function(input, output, session) {
                                                                                      // Highlight on hover
                                                                                      map.on('layeradd', function(e) {var layer = e.layer; if (layer instanceof L.CircleMarker && !layer.getChildCount) {layer.on('mouseover', function() {this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'}); this.bringToFront();}); layer.on('mouseout', function() {this.setStyle({radius: 7, weight: 1, color: 'white', fillColor: 'black'});});}});}")
 
-    perf_state$map_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+    perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
     map_widget
   })
 
-  output$data_table <- renderDT({
+  output$data_table = renderDT({
     req(!is_prediction_mode())
     req(data_available())
-    render_start <- proc.time()[["elapsed"]]
+    render_start = proc.time()[["elapsed"]]
 
-    build_filter_meta <- function(df) {
+    build_filter_meta = function(df) {
       lapply(seq_along(df), function(i) {
-        col_name <- names(df)[i]
-        col <- df[[i]]
+        col_name = names(df)[i]
+        col = df[[i]]
 
         if (col_name %in% c("Latitude", "Longitude")) {
           return(list(type = "native", options = character(0)))
@@ -2407,10 +2407,10 @@ server <- function(input, output, session) {
         if (is.numeric(col) || is.integer(col)) {
           return(list(type = "native", options = character(0)))
         }
-        vals <- as.character(col)
-        vals <- trimws(vals)
-        vals <- vals[!is.na(vals) & nzchar(vals)]
-        vals <- sort(unique(vals))
+        vals = as.character(col)
+        vals = trimws(vals)
+        vals = vals[!is.na(vals) & nzchar(vals)]
+        vals = sort(unique(vals))
         if (length(vals) <= 1) {
           return(list(type = "native", options = character(0)))
         }
@@ -2418,7 +2418,7 @@ server <- function(input, output, session) {
       })
     }
 
-    make_dropdown_filter_init <- function(filter_meta_json) {
+    make_dropdown_filter_init = function(filter_meta_json) {
       JS(sprintf(
         "function(settings, json) {
            var api = this.api();
@@ -2478,9 +2478,9 @@ server <- function(input, output, session) {
     }
 
     if (is_hcp_mode()) {
-      SubsetHCP <- SubsetHCP_r()
-      idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
-      df <- SubsetHCP %>%
+      SubsetHCP = SubsetHCP_r()
+      idx0 = match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+      df = SubsetHCP %>%
         mutate(Country = adm0_lookup$Region[idx0]) %>%
         dplyr::select(any_of(c(
           "hcp_entry_id", "Country", "Availability", "timeframe", "known_implementation_period",
@@ -2502,7 +2502,7 @@ server <- function(input, output, session) {
           "Notes" = "note",
           "Source" = "citation_str"
         )))
-      table_widget <- datatable(df,
+      table_widget = datatable(df,
         selection = "single",
         filter = "top",
         options = list(
@@ -2515,12 +2515,12 @@ server <- function(input, output, session) {
         ),
         class = "stripe hover cell-border"
       )
-      perf_state$table_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+      perf_state$table_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(table_widget)
     }
 
-    SubsetE <- SubsetE_r()
-    df <- SubsetE %>%
+    SubsetE = SubsetE_r()
+    df = SubsetE %>%
       rename(
         "Country" = Region,
         "Province" = Region1,
@@ -2553,7 +2553,7 @@ server <- function(input, output, session) {
         "Population tested positive", "Value", "Cohort", "Nationality", "Ethnicity",
         "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source"
       )
-    table_widget <- datatable(df,
+    table_widget = datatable(df,
       selection = "single",
       filter = "top",
       options = list(
@@ -2566,32 +2566,32 @@ server <- function(input, output, session) {
       ),
       class = "stripe hover cell-border"
     )
-    perf_state$table_render_secs <- round(proc.time()[["elapsed"]] - render_start, 3)
+    perf_state$table_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
     table_widget
   })
 
   # Ported from IthaMaps-shinyapp/app.R lines 757-851: export prediction-mode
   # rasters, cropped figure, and CSV packages from the current prediction view.
-  output$download_tif <- downloadHandler(
+  output$download_tif = downloadHandler(
     filename = function() {
       paste0("IthaMaps_", Sys.Date(), ".zip")
     },
     content = function(file) {
       req(is_prediction_mode())
-      assets <- prediction_data_r()
-      Notification <- showNotification("Export as .zip in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
+      assets = prediction_data_r()
+      Notification = showNotification("Export as .zip in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
       on.exit(removeNotification(Notification), add = TRUE)
 
-      export_dir <- tempfile("IthaMaps_")
+      export_dir = tempfile("IthaMaps_")
       dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
-      export_folder_name <- paste0("IthaMaps_", Sys.Date())
-      export_folder <- file.path(export_dir, export_folder_name)
+      export_folder_name = paste0("IthaMaps_", Sys.Date())
+      export_folder = file.path(export_dir, export_folder_name)
       dir.create(export_folder, recursive = TRUE, showWarnings = FALSE)
 
-      mean_export <- file.path(export_folder, "Predicted-carrier-prevalence.tif")
-      ci95_export <- file.path(export_folder, "Prediction-uncertainty.tif")
-      burden_export <- file.path(export_folder, "Estimated-carriers.tif")
-      sites_export <- file.path(export_folder, "Priority-sites.csv")
+      mean_export = file.path(export_folder, "Predicted-carrier-prevalence.tif")
+      ci95_export = file.path(export_folder, "Prediction-uncertainty.tif")
+      burden_export = file.path(export_folder, "Estimated-carriers.tif")
+      sites_export = file.path(export_folder, "Priority-sites.csv")
 
       raster::writeRaster(assets$Mean, filename = mean_export, format = "GTiff", overwrite = TRUE)
       raster::writeRaster(assets$CI95, filename = ci95_export, format = "GTiff", overwrite = TRUE)
@@ -2602,25 +2602,25 @@ server <- function(input, output, session) {
     }
   )
 
-  output$download_png <- downloadHandler(
+  output$download_png = downloadHandler(
     contentType = "image/png",
     filename = function() {
       paste0("IthaMaps_", Sys.Date(), ".png")
     },
     content = function(file) {
       if (is_prediction_mode()) {
-        assets <- prediction_data_r()
-        Notification <- showNotification("Export as .png in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
+        assets = prediction_data_r()
+        Notification = showNotification("Export as .png in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
         on.exit(removeNotification(Notification), add = TRUE)
 
-        ext <- current_prediction_extent()
-        mean_crop <- tryCatch(raster::crop(assets$Mean, ext), error = function(e) assets$Mean)
-        ci95_crop <- tryCatch(raster::crop(assets$CI95, ext), error = function(e) assets$CI95)
-        burden_crop <- tryCatch(raster::crop(assets$Burden, ext), error = function(e) assets$Burden)
+        ext = current_prediction_extent()
+        mean_crop = tryCatch(raster::crop(assets$Mean, ext), error = function(e) assets$Mean)
+        ci95_crop = tryCatch(raster::crop(assets$CI95, ext), error = function(e) assets$CI95)
+        burden_crop = tryCatch(raster::crop(assets$Burden, ext), error = function(e) assets$Burden)
 
-        if (is.null(mean_crop) || all(is.na(mean_crop[]))) mean_crop <- assets$Mean
-        if (is.null(ci95_crop) || all(is.na(ci95_crop[]))) ci95_crop <- assets$CI95
-        if (is.null(burden_crop) || all(is.na(burden_crop[]))) burden_crop <- assets$Burden
+        if (is.null(mean_crop) || all(is.na(mean_crop[]))) mean_crop = assets$Mean
+        if (is.null(ci95_crop) || all(is.na(ci95_crop[]))) ci95_crop = assets$CI95
+        if (is.null(burden_crop) || all(is.na(burden_crop[]))) burden_crop = assets$Burden
 
         png(filename = file, width = 1800, height = 1800, res = 150)
         par(mfrow = c(2, 2), mar = c(4, 4, 4, 5))
@@ -2629,7 +2629,7 @@ server <- function(input, output, session) {
         raster::plot(burden_crop, col = rev(assets$Burden_colours), main = "Estimated number of carriers", axes = TRUE, box = TRUE)
         raster::plot(ci95_crop, col = rev(assets$CI95_colours), main = "Prediction uncertainty with priority sites", axes = TRUE, box = TRUE)
 
-        selected_sites_export <- assets$Selected_sites %>%
+        selected_sites_export = assets$Selected_sites %>%
           dplyr::filter(
             lon >= raster::xmin(ci95_crop),
             lon <= raster::xmax(ci95_crop),
@@ -2645,16 +2645,16 @@ server <- function(input, output, session) {
         showNotification("PNG export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification <- showNotification("Export as .png in progress...",
+      Notification = showNotification("Export as .png in progress...",
         type = "message", duration = NULL
       )
       on.exit(removeNotification(Notification), add = TRUE)
 
-      SubsetG <- SubsetG_r()
-      MetricN <- MetricN_r()
-      pal_metric_obj <- pal_metric_r()
-      legend_vals <- pal_metric_obj$legend_vals
-      pts <- filtered_data() %>%
+      SubsetG = SubsetG_r()
+      MetricN = MetricN_r()
+      pal_metric_obj = pal_metric_r()
+      legend_vals = pal_metric_obj$legend_vals
+      pts = filtered_data() %>%
         mutate(
           longitude = suppressWarnings(as.numeric(longitude)),
           latitude  = suppressWarnings(as.numeric(latitude))
@@ -2662,19 +2662,19 @@ server <- function(input, output, session) {
         filter(!is.na(longitude), !is.na(latitude))
 
       # Honour the user's current map viewport if available.
-      bounds <- input$map_bounds # list(north, south, east, west) or NULL
-      xlim <- if (!is.null(bounds)) c(bounds$west, bounds$east) else NULL
-      ylim <- if (!is.null(bounds)) c(bounds$south, bounds$north) else NULL
+      bounds = input$map_bounds # list(north, south, east, west) or NULL
+      xlim = if (!is.null(bounds)) c(bounds$west, bounds$east) else NULL
+      ylim = if (!is.null(bounds)) c(bounds$south, bounds$north) else NULL
 
       # Build a continuous viridis fill scale matching the interactive map.
-      fill_scale <- scale_fill_gradientn(
+      fill_scale = scale_fill_gradientn(
         colours  = viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1),
         limits   = range(legend_vals, na.rm = TRUE),
         na.value = "grey80",
         name     = MetricN
       )
 
-      p <- ggplot2::ggplot() +
+      p = ggplot2::ggplot() +
         ggplot2::geom_sf(
           data = SubsetG,
           ggplot2::aes(fill = Metric),
@@ -2708,7 +2708,7 @@ server <- function(input, output, session) {
     }
   )
 
-  output$download_csv <- downloadHandler(
+  output$download_csv = downloadHandler(
     filename = function() {
       if (is_prediction_mode()) {
         paste0("IthaMaps_", Sys.Date(), "_csv.zip")
@@ -2718,31 +2718,31 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       if (is_prediction_mode()) {
-        assets <- prediction_data_r()
-        Notification <- showNotification("Export as .csv in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
+        assets = prediction_data_r()
+        Notification = showNotification("Export as .csv in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
         on.exit(removeNotification(Notification), add = TRUE)
 
-        export_dir <- tempfile("IthaMaps_csv_")
+        export_dir = tempfile("IthaMaps_csv_")
         dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
-        raster_csv <- file.path(export_dir, "Data from rasters.csv")
-        sites_csv <- file.path(export_dir, "Coordinates of priority-sites.csv")
-        prediction_stack <- raster::stack(assets$Mean, assets$CI95, assets$Burden)
-        names(prediction_stack) <- c("Mean", "CI95", "Burden")
-        prediction_values <- raster::rasterToPoints(prediction_stack) %>% as.data.frame()
-        names(prediction_values) <- c("Longitude", "Latitude", "Mean", "CI95", "Burden")
+        raster_csv = file.path(export_dir, "Data from rasters.csv")
+        sites_csv = file.path(export_dir, "Coordinates of priority-sites.csv")
+        prediction_stack = raster::stack(assets$Mean, assets$CI95, assets$Burden)
+        names(prediction_stack) = c("Mean", "CI95", "Burden")
+        prediction_values = raster::rasterToPoints(prediction_stack) %>% as.data.frame()
+        names(prediction_values) = c("Longitude", "Latitude", "Mean", "CI95", "Burden")
         write.csv(prediction_values, file = raster_csv, row.names = FALSE)
         write.csv(assets$Selected_sites, file = sites_csv, row.names = FALSE)
         zip::zipr(zipfile = file, files = list.files(export_dir, full.names = TRUE), root = export_dir)
         return(invisible(NULL))
       }
 
-      Notification <- showNotification("Export as .csv in progress... Please wait until export completes before adjusting filter options.",
+      Notification = showNotification("Export as .csv in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
       if (is_hcp_mode()) {
-        SubsetHCP <- SubsetHCP_r()
-        idx0 <- match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
-        df <- SubsetHCP %>%
+        SubsetHCP = SubsetHCP_r()
+        idx0 = match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+        df = SubsetHCP %>%
           mutate(Country = adm0_lookup$Region[idx0]) %>%
           dplyr::select(any_of(c(
             "Country", "Availability", "timeframe", "known_implementation_period",
@@ -2764,8 +2764,8 @@ server <- function(input, output, session) {
         removeNotification(Notification)
         return(invisible(NULL))
       }
-      SubsetE <- SubsetE_r()
-      df <- SubsetE %>%
+      SubsetE = SubsetE_r()
+      df = SubsetE %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -2794,7 +2794,7 @@ server <- function(input, output, session) {
     }
   )
 
-  output$download_geojson <- downloadHandler(
+  output$download_geojson = downloadHandler(
     filename = function() {
       paste0("IthaMaps_", Sys.Date(), ".geojson")
     },
@@ -2807,13 +2807,13 @@ server <- function(input, output, session) {
         showNotification("GeoJSON export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification <- showNotification("Export as .geojson in progress... Please wait until export completes before adjusting filter options.",
+      Notification = showNotification("Export as .geojson in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
-      SubsetE <- SubsetE_r()
-      sf_df <- entries_to_point_sf(SubsetE)
+      SubsetE = SubsetE_r()
+      sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
-      sf_df <- sf_df %>%
+      sf_df = sf_df %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -2842,7 +2842,7 @@ server <- function(input, output, session) {
     }
   )
 
-  output$download_gpkg <- downloadHandler(
+  output$download_gpkg = downloadHandler(
     filename = function() {
       paste0("IthaMaps_", Sys.Date(), ".gpkg")
     },
@@ -2855,13 +2855,13 @@ server <- function(input, output, session) {
         showNotification("GPKG export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification <- showNotification("Export as .gpkg in progress... Please wait until export completes before adjusting filter options.",
+      Notification = showNotification("Export as .gpkg in progress... Please wait until export completes before adjusting filter options.",
         type = "message", duration = NULL
       )
-      SubsetE <- SubsetE_r()
-      sf_df <- entries_to_point_sf(SubsetE)
+      SubsetE = SubsetE_r()
+      sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
-      sf_df <- sf_df %>%
+      sf_df = sf_df %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -2893,14 +2893,14 @@ server <- function(input, output, session) {
   observeEvent(input$map_marker_click, {
     req(!is_prediction_mode())
     req(data_available())
-    click <- input$map_marker_click
-    data <- filtered_data()
+    click = input$map_marker_click
+    data = filtered_data()
     if (!is.null(click)) {
-      lng <- suppressWarnings(as.numeric(data$longitude))
-      lat <- suppressWarnings(as.numeric(data$latitude))
-      dists <- (lng - click$lng)^2 + (lat - click$lat)^2
-      dists[is.na(dists)] <- Inf
-      nearest_idx <- which.min(dists)
+      lng = suppressWarnings(as.numeric(data$longitude))
+      lat = suppressWarnings(as.numeric(data$latitude))
+      dists = (lng - click$lng)^2 + (lat - click$lat)^2
+      dists[is.na(dists)] = Inf
+      nearest_idx = which.min(dists)
       selected_marker_idx(nearest_idx)
       selected_shape_idx(NULL)
     }
@@ -2912,34 +2912,34 @@ server <- function(input, output, session) {
     if (is_hcp_mode()) {
       return(invisible(NULL))
     }
-    click <- input$map_shape_click
-    SubsetG <- SubsetG_r()
+    click = input$map_shape_click
+    SubsetG = SubsetG_r()
     if (!is.null(click) && !is.null(SubsetG)) {
-      clicked_shape <- st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
-      dists <- st_distance(clicked_shape, st_centroid(SubsetG))
-      nearest_idx <- which.min(dists)
+      clicked_shape = st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
+      dists = st_distance(clicked_shape, st_centroid(SubsetG))
+      nearest_idx = which.min(dists)
       selected_shape_idx(nearest_idx)
       selected_marker_idx(NULL)
     }
   })
 
-  output$custom_popup <- renderUI({
+  output$custom_popup = renderUI({
     if (is_prediction_mode()) {
       return(summary_panel_r())
     }
 
-    marker_idx <- selected_marker_idx()
-    shape_idx <- selected_shape_idx()
+    marker_idx = selected_marker_idx()
+    shape_idx = selected_shape_idx()
 
     if (!is.null(marker_idx)) {
-      popup_content <- popup_content_r()
+      popup_content = popup_content_r()
       if (marker_idx >= 1 && marker_idx <= length(popup_content)) {
         return(popup_content[[marker_idx]])
       }
     }
 
     if (!is.null(shape_idx) && !is_hcp_mode()) {
-      popup_contentA <- popup_contentA_r()
+      popup_contentA = popup_contentA_r()
       if (shape_idx >= 1 && shape_idx <= length(popup_contentA)) {
         return(popup_contentA[[shape_idx]])
       }
@@ -2948,10 +2948,10 @@ server <- function(input, output, session) {
     summary_panel_r()
   })
 
-  output$timing_panel <- renderUI({
-    timings <- timing_info_r()
+  output$timing_panel = renderUI({
+    timings = timing_info_r()
     if (length(timings) == 0) {
-      raw_qs <- session$clientData$url_search %||% ""
+      raw_qs = session$clientData$url_search %||% ""
       return(div(
         class = "alert alert-secondary perf-panel",
         strong("Performance timings"),
@@ -2966,7 +2966,7 @@ server <- function(input, output, session) {
       ))
     }
 
-    timing_rows <- c(
+    timing_rows = c(
       "Cache hit" = if (isTRUE(timings$cache_hit)) "yes" else "no",
       "Cache lookup" = if (!is.null(timings$cache_lookup)) sprintf("%.3fs", timings$cache_lookup) else NA_character_,
       "Bundle fetch" = if (!is.null(timings$bundle_fetch)) sprintf("%.3fs", timings$bundle_fetch) else NA_character_,
@@ -2984,7 +2984,7 @@ server <- function(input, output, session) {
       "Table render" = if (!is.null(perf_state$table_render_secs)) sprintf("%.3fs", perf_state$table_render_secs) else NA_character_
     )
 
-    timing_rows <- timing_rows[!is.na(timing_rows)]
+    timing_rows = timing_rows[!is.na(timing_rows)]
 
     div(
       class = "alert alert-secondary perf-panel",
@@ -3003,7 +3003,7 @@ server <- function(input, output, session) {
     )
   })
 
-  output$no_data_notification <- renderUI({
+  output$no_data_notification = renderUI({
     if (is_prediction_mode()) {
       return(NULL)
     }
