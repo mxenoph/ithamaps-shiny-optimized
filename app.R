@@ -534,7 +534,7 @@ Country = data.frame(
   Option = db_country$countryName
 )
 
-Parameter = data.frame(
+Measure = data.frame(
   ID = db_measure$measure_id,
   Option = db_measure$measure_name
 ) %>%
@@ -549,32 +549,105 @@ Parameter = data.frame(
     Option = "Healthcare availability"
   ))
 
-HemoglobinopathyH = data.frame(
-  ID = db_cause$cause_id,
-  Option = db_cause$cause_name
-) %>%
-  filter(Option %in% c("Thalassaemia", "Hemoglobinopathy", "Sickle Cell Disease"))
-
-HemoglobinopathyP = data.frame(
-  ID = db_cause$cause_id,
-  Option = db_cause$cause_name
-) %>%
-  filter(Option %in% c(
+cause_labels_healthcare = c("Thalassaemia", "Hemoglobinopathy", "Sickle Cell Disease")
+cause_labels_phenotype = c(
     "Beta Thalassaemia", "Alpha Thalassaemia", "Sickle Cell Disease", "Hemoglobin E Disease",
     "Hemoglobin C Disease", "Thalassaemia", "Delta Thalassaemia", "Sickle Cell Disease-SC",
     "Sickle Cell Disease-SE", "Sickle Beta Thalassaemia", "Hemoglobin C/Beta Thalassaemia Disease",
     "Hemoglobin E/Beta Thalassaemia Disease", "Delta Beta Thalassaemia", "Thalassaemia Intermedia",
     "Thalassaemia Major", "Hemoglobin H Disease", "Hydrops Fetalis", "Hemoglobin Barts", "Sickle Cell Disease-SS"
-  ))
+)
+cause_labels_carrier = c(
+    "Beta Thalassaemia", "Alpha Thalassaemia", "Sickle Cell Disease", "Hemoglobin E Disease",
+    "Hemoglobin C Disease", "Thalassaemia", "Delta Thalassaemia", "Sickle Cell Disease-SS"
+)
 
-HemoglobinopathyC = data.frame(
+Cause = data.frame(
   ID = db_cause$cause_id,
   Option = db_cause$cause_name
 ) %>%
-  filter(Option %in% c(
-    "Beta Thalassaemia", "Alpha Thalassaemia", "Sickle Cell Disease", "Hemoglobin E Disease",
-    "Hemoglobin C Disease", "Thalassaemia", "Delta Thalassaemia", "Sickle Cell Disease-SS"
-  ))
+  filter(Option %in% unique(c(
+    cause_labels_healthcare,
+    cause_labels_carrier,
+    cause_labels_phenotype
+  )))
+
+cause_ids_healthcare = Cause %>%
+  filter(Option %in% cause_labels_healthcare) %>%
+  pull(ID)
+cause_ids_carrier = Cause %>%
+  filter(Option %in% cause_labels_carrier) %>%
+  pull(ID)
+cause_ids_phenotype = Cause %>%
+  filter(Option %in% cause_labels_phenotype) %>%
+  pull(ID)
+
+measure_mode = function(measure_label) {
+  if (is.null(measure_label) || length(measure_label) == 0 || is.na(measure_label[[1]])) {
+    return(NULL)
+  }
+
+  measure_lower = tolower(as.character(measure_label[[1]]))
+  if (measure_lower == "healthcare availability") {
+    return("healthcare")
+  }
+  if (grepl("carrier", measure_lower)) {
+    return("carrier")
+  }
+  if (measure_lower == "allele frequency") {
+    return("allele_frequency")
+  }
+  if (measure_lower == "relative allele frequency") {
+    return("relative_allele_frequency")
+  }
+  "phenotype"
+}
+
+validate_measure_cause_combination = function(measure_id, cause_id, measure_label, cause_label) {
+  errors = character()
+
+  if (is.null(measure_id) || is.null(cause_id)) {
+    return(errors)
+  }
+
+  mode = measure_mode(measure_label)
+  if (is.null(mode)) {
+    return(errors)
+  }
+
+  allowed_lookup = switch(mode,
+    healthcare = cause_ids_healthcare,
+    carrier = cause_ids_carrier,
+    phenotype = cause_ids_phenotype,
+    allele_frequency = integer(),
+    relative_allele_frequency = integer(),
+    integer()
+  )
+
+  if (!(cause_id %in% allowed_lookup)) {
+    if (mode %in% c("allele_frequency", "relative_allele_frequency")) {
+      errors = c(
+        errors,
+        sprintf(
+          "Cause '%s' is not allowed when Measure is '%s'.",
+          as.character(cause_label %||% cause_id),
+          as.character(measure_label %||% measure_id)
+        )
+      )
+    } else {
+      errors = c(
+        errors,
+        sprintf(
+          "Cause '%s' is not allowed for Measure '%s'.",
+          as.character(cause_label %||% cause_id),
+          as.character(measure_label %||% measure_id)
+        )
+      )
+    }
+  }
+
+  unique(errors)
+}
 
 Healthcare = data.frame(
   ID = db_hc_policies$hcp_id,
@@ -751,17 +824,11 @@ Parse = function(Query) {
     if (key_lower == "continent") {
       return("Continent")
     }
-    if (key_lower == "parameter") {
-      return("Parameter")
+    if (key_lower %in% c("measure", "parameter")) {
+      return("Measure")
     }
-    if (key_lower == "hemoglobinopathyh") {
-      return("HemoglobinopathyH")
-    }
-    if (key_lower == "hemoglobinopathyc") {
-      return("HemoglobinopathyC")
-    }
-    if (key_lower == "hemoglobinopathyp") {
-      return("HemoglobinopathyP")
+    if (key_lower == "cause") {
+      return("Cause")
     }
     if (key_lower == "healthcare") {
       return("Healthcare")
@@ -821,8 +888,7 @@ Extract = function(Query) {
   }
 
   expected_keys = c(
-    "DataType", "Resolution", "Continent", "Country", "Parameter",
-    "HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP",
+    "DataType", "Resolution", "Continent", "Country", "Measure", "Cause",
     "Healthcare", "GlobinPheAF", "VariantC",
     "GlobinPheRAF", "IthaID", "Metric", "Aggregation"
   )
@@ -831,6 +897,16 @@ Extract = function(Query) {
   for (x in expected_keys) {
     parsed = parse_int(Query[[x]])
     if (!is.null(parsed)) Info[[x]] = parsed
+  }
+
+  if (is.null(Info[["Cause"]])) {
+    for (legacy_key in c("HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP")) {
+      parsed = parse_int(Query[[legacy_key]])
+      if (!is.null(parsed)) {
+        Info[["Cause"]] = parsed
+        break
+      }
+    }
   }
 
   # Backward-compatible fallback: if HealthcareDetail is provided,
@@ -1128,8 +1204,7 @@ build_query_bundle = function(raw_qs) {
 
   lookup = list(
     DataType = DataType, Resolution = Resolution, Continent = Continent, Country = Country,
-    Parameter = Parameter, HemoglobinopathyH = HemoglobinopathyH,
-    HemoglobinopathyC = HemoglobinopathyC, HemoglobinopathyP = HemoglobinopathyP,
+    Measure = Measure, Cause = Cause,
     Healthcare = Healthcare,
     HealthcareS1 = HealthcareS1, HealthcareS2 = HealthcareS2, HealthcareS3 = HealthcareS3,
     HealthcareS4 = HealthcareS4, HealthcareS5 = HealthcareS5, HealthcareS6 = HealthcareS6,
@@ -1148,6 +1223,28 @@ build_query_bundle = function(raw_qs) {
     Info$DataType = "Curated data"
   }
 
+  validation_errors = validate_measure_cause_combination(
+    measure_id = Query$Measure,
+    cause_id = Query$Cause,
+    measure_label = Info$Measure,
+    cause_label = Info$Cause
+  )
+
+  if (length(validation_errors) > 0) {
+    timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
+    return(list(
+      DataType = Info$DataType,
+      query_info = Info,
+      prediction = NULL,
+      SubsetE = NULL,
+      SubsetHCP = NULL,
+      SubsetG = NULL,
+      MetricN = NULL,
+      validation_errors = validation_errors,
+      timings = timing_list(timing_env)
+    ))
+  }
+
   if (identical(Info$DataType, "Prediction data")) {
     timing_env[["prediction_assets"]] = 0
     timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
@@ -1159,6 +1256,7 @@ build_query_bundle = function(raw_qs) {
       SubsetHCP = NULL,
       SubsetG = NULL,
       MetricN = NULL,
+      validation_errors = character(),
       timings = timing_list(timing_env)
     ))
   }
@@ -1208,19 +1306,19 @@ build_query_bundle = function(raw_qs) {
   SubsetE = resolution_result$SubsetE
   SubsetHCP = resolution_result$SubsetHCP
 
-  # --- Parameter, Hemoglobinopathy, Globin phenotype, IthaID, Healthcare ---
+  # --- Measure, Cause, Globin phenotype, IthaID, Healthcare ---
   parameter_result = timed_call(timing_env, "parameter_filter", function() {
     result = list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
 
-    if (is.null(SubsetE) || !("Parameter" %in% names(Info)) || is.na(Info$Parameter)) {
+    if (is.null(SubsetE) || !("Measure" %in% names(Info)) || is.na(Info$Measure)) {
       return(result)
     }
 
-    Field = Parameter[Parameter$Option == Info$Parameter, "Option"]
+    Field = Measure[Measure$Option == Info$Measure, "Option"]
     if (length(Field) > 0 && Field == "Healthcare availability") {
       result$SubsetE = NULL
-      if ("HemoglobinopathyH" %in% names(Info) && !is.na(Info$HemoglobinopathyH)) {
-        Field = HemoglobinopathyH[HemoglobinopathyH$Option == Info$HemoglobinopathyH, "Option"]
+      if ("Cause" %in% names(Info) && !is.na(Info$Cause)) {
+        Field = Cause[Cause$Option == Info$Cause, "Option"]
         result$SubsetHCP = result$SubsetHCP %>%
           filter(cause_name == Field) %>%
           select(-cause_name)
@@ -1276,14 +1374,8 @@ build_query_bundle = function(raw_qs) {
           }
         }
       }
-      if ("HemoglobinopathyC" %in% names(Info) && !is.na(Info$HemoglobinopathyC)) {
-        Field = HemoglobinopathyC[HemoglobinopathyC$Option == Info$HemoglobinopathyC, "Option"]
-        result$SubsetE = result$SubsetE %>%
-          filter(cause_name == Field) %>%
-          select(-cause_name, -phenotype)
-      }
-      if ("HemoglobinopathyP" %in% names(Info) && !is.na(Info$HemoglobinopathyP)) {
-        Field = HemoglobinopathyP[HemoglobinopathyP$Option == Info$HemoglobinopathyP, "Option"]
+      if ("Cause" %in% names(Info) && !is.na(Info$Cause)) {
+        Field = Cause[Cause$Option == Info$Cause, "Option"]
         result$SubsetE = result$SubsetE %>%
           filter(cause_name == Field) %>%
           select(-cause_name, -phenotype)
@@ -1398,7 +1490,7 @@ build_query_bundle = function(raw_qs) {
 
   timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
 
-  list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, timings = timing_list(timing_env))
+  list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, validation_errors = character(), timings = timing_list(timing_env))
 }
 
 build_query_bundle_cached = function(raw_qs) {
@@ -1438,6 +1530,58 @@ build_query_bundle_cached = function(raw_qs) {
 # Generate shiny app
 ui = fluidPage(
   theme = bs_theme(version = 5, bootswatch = "litera"),
+  tags$head(
+    tags$script(HTML("(function() {
+      var iframeId = 'ithamaps_shiny_iframe';
+      var messageType = 'resizeIframe';
+      var timer = null;
+
+      function currentHeight() {
+        var body = document.body;
+        var html = document.documentElement;
+        return Math.max(
+          body ? body.scrollHeight : 0,
+          html ? html.scrollHeight : 0,
+          body ? body.offsetHeight : 0,
+          html ? html.offsetHeight : 0,
+          body ? body.clientHeight : 0,
+          html ? html.clientHeight : 0
+        );
+      }
+
+      function postHeight() {
+        if (!window.parent || window.parent === window) {
+          return;
+        }
+        window.parent.postMessage({
+          type: messageType,
+          iframeId: iframeId,
+          height: currentHeight()
+        }, '*');
+      }
+
+      function schedulePostHeight() {
+        clearTimeout(timer);
+        timer = setTimeout(postHeight, 100);
+      }
+
+      $(document).on('shiny:connected shiny:idle shiny:recalculating shiny:value shiny:visualchange', schedulePostHeight);
+      $(window).on('load resize', schedulePostHeight);
+
+      var observer = new MutationObserver(schedulePostHeight);
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+
+      if (window.Shiny && Shiny.addCustomMessageHandler) {
+        Shiny.addCustomMessageHandler('ithamaps-resize-iframe', function(message) {
+          schedulePostHeight();
+        });
+      }
+
+      schedulePostHeight();
+      setTimeout(schedulePostHeight, 500);
+      setTimeout(schedulePostHeight, 1500);
+    })();"))
+  ),
   tags$style(HTML(".dataTables_wrapper .dataTables_filter,
                                  .dataTables_wrapper .dataTables_length,
                                  .dataTables_wrapper .dataTables_info,
@@ -1573,11 +1717,17 @@ server = function(input, output, session) {
   MetricN_r = reactive({
     query_bundle()$MetricN
   })
+  validation_errors_r = reactive({
+    query_bundle()$validation_errors %||% character()
+  })
   timing_info_r = reactive({
     query_bundle()$timings %||% list()
   })
 
   data_available = reactive({
+    if (length(validation_errors_r()) > 0) {
+      return(FALSE)
+    }
     if (is_prediction_mode()) {
       return(TRUE)
     }
@@ -1604,6 +1754,10 @@ server = function(input, output, session) {
   selected_prediction_point = reactiveVal(NULL)
 
   output$main_content = renderUI({
+    if (length(validation_errors_r()) > 0) {
+      return(div())
+    }
+
     if (is_prediction_mode()) {
       # Ported from IthaMaps-shinyapp/app.R lines 489-513 and 757-851:
       # render the dedicated prediction-mode four-map layout and export actions.
@@ -1667,6 +1821,13 @@ server = function(input, output, session) {
     div(
       class = "container-fluid py-4 px-4",
       div(
+        class = "row g-3 mb-3",
+        div(
+          class = "col-12",
+          div(class = "info-card", uiOutput("current_curated_query"))
+        )
+      ),
+      div(
         class = "d-flex mb-4 shadow-sm rounded border",
         div(
           style = "width: 30%; max-height: 500px; overflow-y: auto; padding: 10px; border-right: 1px solid #ccc; background-color: #f8f9fa;",
@@ -1702,8 +1863,7 @@ server = function(input, output, session) {
 
     lookup = list(
       DataType = DataType, Resolution = Resolution, Continent = Continent, Country = Country,
-      Parameter = Parameter, HemoglobinopathyH = HemoglobinopathyH,
-      HemoglobinopathyC = HemoglobinopathyC, HemoglobinopathyP = HemoglobinopathyP,
+      Measure = Measure, Cause = Cause,
       Healthcare = Healthcare,
       HealthcareS1 = HealthcareS1, HealthcareS2 = HealthcareS2, HealthcareS3 = HealthcareS3,
       HealthcareS4 = HealthcareS4, HealthcareS5 = HealthcareS5, HealthcareS6 = HealthcareS6,
@@ -1714,8 +1874,7 @@ server = function(input, output, session) {
     )
 
     preferred_order = c(
-      "DataType", "Resolution", "Continent", "Country", "Parameter",
-      "HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP",
+      "DataType", "Resolution", "Continent", "Country", "Measure", "Cause",
       "Healthcare", paste0("HealthcareS", 1:13),
       "GlobinPheAF", "VariantC", "GlobinPheRAF", "IthaID", "Metric", "Aggregation"
     )
@@ -1826,6 +1985,72 @@ server = function(input, output, session) {
       "</div>"
     )
     HTML(table_html)
+  })
+
+  curated_query_box_html = reactive({
+    req(!is_prediction_mode())
+
+    params_df = selected_parameters_r()
+    if (nrow(params_df) == 0) {
+      return(HTML(paste0(
+        "<div style='padding: 8px; border: 1px solid #9ec5fe; background: #eef6ff; border-radius: 6px;'>",
+        "<strong>Current curated query:</strong> No URL query parameters were provided.",
+        "</div>"
+      )))
+    }
+
+    label_map = c(
+      Resolution = "Resolution",
+      Continent = "Continent",
+      Country = "Country",
+      Measure = "Measure",
+      Cause = "Cause",
+      Healthcare = "Healthcare",
+      GlobinPheAF = "Globin phenotype",
+      VariantC = "Variant mode",
+      GlobinPheRAF = "Grouped phenotype",
+      IthaID = "IthaID",
+      Metric = "Metric",
+      Aggregation = "Aggregation"
+    )
+    healthcare_labels = stats::setNames(
+      paste("Healthcare detail", 1:13),
+      paste0("HealthcareS", 1:13)
+    )
+    label_map = c(label_map, healthcare_labels)
+
+    preferred_order = c(
+      "Resolution", "Continent", "Country", "Measure", "Cause",
+      "Healthcare", paste0("HealthcareS", 1:13),
+      "GlobinPheAF", "VariantC", "GlobinPheRAF", "IthaID",
+      "Metric", "Aggregation"
+    )
+
+    params_df = params_df %>%
+      filter(Parameter != "DataType") %>%
+      mutate(
+        sort_key = match(Parameter, preferred_order),
+        sort_key = ifelse(is.na(sort_key), length(preferred_order) + seq_len(n()), sort_key),
+        Label = dplyr::coalesce(unname(label_map[Parameter]), Parameter)
+      ) %>%
+      arrange(sort_key)
+
+    detail_text = if (nrow(params_df) == 0) {
+      "No curated-data filters are currently active."
+    } else {
+      paste(sprintf("%s = %s", params_df$Label, params_df$Selection), collapse = "; ")
+    }
+
+    HTML(paste0(
+      "<div style='padding: 8px; border: 1px solid #9ec5fe; background: #eef6ff; border-radius: 6px;'>",
+      "<strong>Current curated query:</strong> ",
+      detail_text,
+      ".</div>"
+    ))
+  })
+
+  output$current_curated_query = renderUI({
+    curated_query_box_html()
   })
 
   observeEvent(input$data_table_rows_selected, {
@@ -2158,14 +2383,8 @@ server = function(input, output, session) {
     query_info = query_bundle()$query_info %||% list()
 
     requested_resolution = as.character(query_info$Resolution %||% "Not provided")
-    requested_parameter = as.character(query_info$Parameter %||% "Not provided")
-    requested_cause = as.character(
-      query_info$HemoglobinopathyP %||%
-        query_info$HemoglobinopathyC %||%
-        query_info$HemoglobinopathyH %||%
-        query_info$Cause %||%
-        "Not provided"
-    )
+    requested_measure = as.character(query_info$Measure %||% "Not provided")
+    requested_cause = as.character(query_info$Cause %||% "Not provided")
 
     HTML(paste0(
       "<div style='margin-bottom: 8px; padding: 8px; border: 1px solid #e3b341; background: #fff8e1; border-radius: 6px;'>",
@@ -2174,7 +2393,7 @@ server = function(input, output, session) {
       "Additional parameter combinations may become available as new validated datasets are incorporated.",
       "<br><span style='font-size: 0.82rem;'><strong>Current prediction query:</strong> ",
       "Resolution = ", requested_resolution,
-      "; Measure = ", requested_parameter,
+      "; Measure = ", requested_measure,
       "; Cause = ", requested_cause,
       ".</span>",
       "</div>"
@@ -3030,8 +3249,9 @@ server = function(input, output, session) {
   })
 
   output$no_data_notification = renderUI({
-    if (is_prediction_mode()) {
-      return(NULL)
+    validation_errors = validation_errors_r()
+    if (length(validation_errors) > 0) {
+      return(div(class = "alert alert-warning", paste(validation_errors, collapse = " ")))
     }
     if (!data_available()) {
       div(class = "alert alert-warning", "No data is available for the selected parameter combination.")
