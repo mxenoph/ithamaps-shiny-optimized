@@ -1535,6 +1535,7 @@ ui = fluidPage(
       var iframeId = 'ithamaps_shiny_iframe';
       var messageType = 'resizeIframe';
       var timer = null;
+      var lastPostedHeight = 0;
 
       function currentHeight() {
         var body = document.body;
@@ -1543,9 +1544,7 @@ ui = fluidPage(
           body ? body.scrollHeight : 0,
           html ? html.scrollHeight : 0,
           body ? body.offsetHeight : 0,
-          html ? html.offsetHeight : 0,
-          body ? body.clientHeight : 0,
-          html ? html.clientHeight : 0
+          html ? html.offsetHeight : 0
         );
       }
 
@@ -1553,10 +1552,18 @@ ui = fluidPage(
         if (!window.parent || window.parent === window) {
           return;
         }
+        var nextHeight = currentHeight();
+        if (!nextHeight || nextHeight < 200) {
+          return;
+        }
+        if (Math.abs(nextHeight - lastPostedHeight) < 3) {
+          return;
+        }
+        lastPostedHeight = nextHeight;
         window.parent.postMessage({
           type: messageType,
           iframeId: iframeId,
-          height: currentHeight()
+          height: nextHeight
         }, '*');
       }
 
@@ -1566,7 +1573,7 @@ ui = fluidPage(
       }
 
       $(document).on('shiny:connected shiny:idle shiny:recalculating shiny:value shiny:visualchange', schedulePostHeight);
-      $(window).on('load resize', schedulePostHeight);
+      $(window).on('load', schedulePostHeight);
 
       var observer = new MutationObserver(schedulePostHeight);
       observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
@@ -1580,6 +1587,7 @@ ui = fluidPage(
       schedulePostHeight();
       setTimeout(schedulePostHeight, 500);
       setTimeout(schedulePostHeight, 1500);
+      setTimeout(schedulePostHeight, 3000);
     })();"))
   ),
   tags$style(HTML(".dataTables_wrapper .dataTables_filter,
