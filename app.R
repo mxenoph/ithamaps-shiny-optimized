@@ -1614,7 +1614,6 @@ ui = fluidPage(
                                  .raster-legend-bar {height: 14px; border-radius: 4px; border: 1px solid #bbb;}
                                  .raster-legend-labels {display: flex; justify-content: space-between; margin-top: 0.25rem; font-size: 0.75rem;}
                                  .download-row {margin-top: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}")),
-  uiOutput("no_data_notification"),
   uiOutput("timing_panel"),
   uiOutput("main_content")
 )
@@ -1818,13 +1817,55 @@ server = function(input, output, session) {
       ))
     }
 
+    if (!data_available()) {
+      return(div(
+        class = "container-fluid py-4 px-4",
+        div(
+          class = "row g-3 mb-3",
+          div(
+            class = "col-12",
+            div(
+              class = "info-card",
+              div(
+                class = "row",
+                div(class = "col-12", uiOutput("current_curated_query"))
+              ),
+              div(
+                class = "row mt-2 pt-2",
+                style = "border-top: 1px solid #dee2e6;",
+                div(
+                  class = "col-12",
+                  style = "color: red; background-color: #fff3cd; padding: 0.5rem 0.75rem;",
+                  "No data is available for the selected parameter combination."
+                )
+              )
+            )
+          )
+        )
+      ))
+    }
+
     div(
       class = "container-fluid py-4 px-4",
       div(
         class = "row g-3 mb-3",
         div(
           class = "col-12",
-          div(class = "info-card", uiOutput("current_curated_query"))
+          div(
+            class = "info-card",
+            div(
+              class = "row",
+              div(class = "col-12", uiOutput("current_curated_query"))
+            ),
+            div(
+              class = "row mt-2 pt-2",
+              style = "border-top: 1px solid #dee2e6;",
+              div(
+                class = "col-12 text-muted",
+                "Circles show unique records. Numbered black circles indicate multiple records at that location. Click any marker for more details."
+              )
+            )
+          )
         )
       ),
       div(
@@ -3253,9 +3294,7 @@ server = function(input, output, session) {
     if (length(validation_errors) > 0) {
       return(div(class = "alert alert-warning", paste(validation_errors, collapse = " ")))
     }
-    if (!data_available()) {
-      div(class = "alert alert-warning", "No data is available for the selected parameter combination.")
-    }
+    NULL
   })
 }
 
