@@ -1556,7 +1556,7 @@ ui = fluidPage(
         if (!nextHeight || nextHeight < 200) {
           return;
         }
-        if (Math.abs(nextHeight - lastPostedHeight) < 3) {
+        if (Math.abs(nextHeight - lastPostedHeight) < 12) {
           return;
         }
         lastPostedHeight = nextHeight;
@@ -1569,25 +1569,36 @@ ui = fluidPage(
 
       function schedulePostHeight() {
         clearTimeout(timer);
-        timer = setTimeout(postHeight, 100);
+        timer = setTimeout(postHeight, 250);
       }
 
-      $(document).on('shiny:connected shiny:idle shiny:recalculating shiny:value shiny:visualchange', schedulePostHeight);
+      $(document).on('shiny:connected shiny:idle', schedulePostHeight);
       $(window).on('load', schedulePostHeight);
-
-      var observer = new MutationObserver(schedulePostHeight);
-      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
 
       if (window.Shiny && Shiny.addCustomMessageHandler) {
         Shiny.addCustomMessageHandler('ithamaps-resize-iframe', function(message) {
           schedulePostHeight();
         });
+        Shiny.addCustomMessageHandler('ithamaps-export-status', function(message) {
+          var el = document.getElementById('ithamaps_export_status');
+          if (!el) {
+            return;
+          }
+          var text = message && message.text ? String(message.text) : '';
+          if (text) {
+            el.textContent = text;
+            el.style.display = 'block';
+          } else {
+            el.textContent = '';
+            el.style.display = 'none';
+          }
+        });
       }
 
-      schedulePostHeight();
-      setTimeout(schedulePostHeight, 500);
-      setTimeout(schedulePostHeight, 1500);
-      setTimeout(schedulePostHeight, 3000);
+      // Delay initial resize posts so Leaflet panes finish initialising
+      // before the iframe height change triggers a map.getBounds() call.
+      setTimeout(schedulePostHeight, 800);
+      setTimeout(schedulePostHeight, 2000);
     })();"))
   ),
   tags$style(HTML(".dataTables_wrapper .dataTables_filter,
@@ -1628,7 +1639,18 @@ ui = fluidPage(
 
 
 server = function(input, output, session) {
-  perf_state = reactiveValues(map_render_secs = NULL, table_render_secs = NULL)
+  perf_state = reactiveValues(
+    map_render_secs = NULL,
+    table_render_secs = NULL,
+    png_prep_cache_hit = NULL,
+    png_prep_workers = NULL,
+    png_prep_secs = NULL,
+    png_context_secs = NULL,
+    png_data_secs = NULL,
+    png_plot_build_secs = NULL,
+    png_save_secs = NULL,
+    png_total_secs = NULL
+  )
   trace_env = new.env(parent = emptyenv())
   trace_env$bundle_builds = 0L
   trace_env$last_qs = NA_character_
@@ -1759,6 +1781,28 @@ server = function(input, output, session) {
   selected_shape_idx = reactiveVal(NULL)
   selected_row = reactiveVal(NULL)
   selected_prediction_point = reactiveVal(NULL)
+  export_status_text = reactiveVal("")
+
+  set_export_status = function(msg) {
+    text = msg %||% ""
+    export_status_text(text)
+    session$sendCustomMessage("ithamaps-export-status", list(text = text))
+  }
+
+  clear_export_status = function() {
+    export_status_text("")
+    session$sendCustomMessage("ithamaps-export-status", list(text = ""))
+  }
+
+  output$export_status_inline = renderUI({
+    msg = export_status_text()
+    div(
+      id = "ithamaps_export_status",
+      class = "alert alert-info py-2 px-3 mt-2 mb-0",
+      style = paste0("font-size: 0.9rem;", if (!nzchar(msg)) " display:none;" else ""),
+      msg
+    )
+  })
 
   output$main_content = renderUI({
     if (length(validation_errors_r()) > 0) {
@@ -1821,7 +1865,8 @@ server = function(input, output, session) {
           downloadButton("download_tif", "Export as .tif", icon = icon("file-arrow-down"), class = "btn btn-secondary btn-sm"),
           downloadButton("download_png", "Export as .png", icon = icon("file-image"), class = "btn btn-secondary btn-sm"),
           downloadButton("download_csv", "Export as .csv", icon = icon("file-csv"), class = "btn btn-secondary btn-sm")
-        )
+        ),
+        uiOutput("export_status_inline")
       ))
     }
 
@@ -1894,6 +1939,7 @@ server = function(input, output, session) {
         downloadButton("download_gpkg", "Export as .gpkg", icon = icon("file-arrow-down"), class = "btn btn-secondary btn-sm"),
         downloadButton("download_geojson", "Export as .geojson", icon = icon("file-arrow-down"), class = "btn btn-secondary btn-sm")
       ),
+      uiOutput("export_status_inline"),
       div(
         class = "table-responsive shadow-sm rounded border",
         style = "",
@@ -2864,6 +2910,167 @@ server = function(input, output, session) {
     table_widget
   })
 
+  png_export_cache = reactiveVal(list(key = NULL, payload = NULL))
+
+  curated_png_payload_r = reactive({
+    req(!is_prediction_mode())
+    req(!is_hcp_mode())
+    req(data_available())
+
+    SubsetG = SubsetG_r()
+    req(!is.null(SubsetG), nrow(SubsetG) > 0)
+
+    query_info = query_bundle()$query_info %||% list()
+    agg_level = as.character(query_info$Aggregation %||% "Country-level")
+    bounds = input$map_bounds
+    bounds_key = if (is.null(bounds)) "no-bounds" else paste(bounds$west, bounds$east, bounds$south, bounds$north, sep = "|")
+    cache_key = paste(
+      normalize_query_string(session$clientData$url_search %||% ""),
+      agg_level,
+      bounds_key,
+      nrow(SubsetG),
+      sep = "::"
+    )
+
+    prep_start = proc.time()[["elapsed"]]
+    cached = png_export_cache()
+    if (!is.null(cached$key) && identical(cached$key, cache_key) && !is.null(cached$payload)) {
+      perf_state$png_prep_cache_hit = "yes"
+      perf_state$png_prep_secs = round(proc.time()[["elapsed"]] - prep_start, 3)
+      perf_state$png_prep_workers = 0L
+      log_trace("png_prep", paste0("cache_hit=yes prep_secs=", perf_state$png_prep_secs))
+      return(cached$payload)
+    }
+
+    pts = filtered_data() %>%
+      mutate(
+        longitude = suppressWarnings(as.numeric(longitude)),
+        latitude = suppressWarnings(as.numeric(latitude))
+      ) %>%
+      filter(!is.na(longitude), !is.na(latitude))
+
+    xlim = if (!is.null(bounds)) c(bounds$west, bounds$east) else NULL
+    ylim = if (!is.null(bounds)) c(bounds$south, bounds$north) else NULL
+
+    build_export_bbox = function(context_data, data_subset, map_bounds) {
+      if (!is.null(map_bounds)) {
+        return(sf::st_bbox(c(
+          xmin = map_bounds$west,
+          xmax = map_bounds$east,
+          ymin = map_bounds$south,
+          ymax = map_bounds$north
+        ), crs = sf::st_crs(context_data)))
+      }
+
+      bbox_source = if (!is.null(data_subset) && nrow(data_subset) > 0) data_subset else context_data
+      bbox = sf::st_bbox(bbox_source)
+      x_pad = max((bbox$xmax - bbox$xmin) * 0.08, 0.25)
+      y_pad = max((bbox$ymax - bbox$ymin) * 0.08, 0.25)
+      sf::st_bbox(c(
+        xmin = bbox$xmin - x_pad,
+        xmax = bbox$xmax + x_pad,
+        ymin = bbox$ymin - y_pad,
+        ymax = bbox$ymax + y_pad
+      ), crs = sf::st_crs(context_data))
+    }
+
+    make_plot_safe_sf = function(sf_data, bbox = NULL) {
+      if (is.null(sf_data) || nrow(sf_data) == 0) {
+        return(sf_data)
+      }
+
+      cropped = if (!is.null(bbox)) {
+        suppressWarnings(tryCatch(
+          {
+            bbox_poly = sf::st_as_sfc(bbox)
+            hits = suppressWarnings(sf::st_intersects(sf_data, bbox_poly, sparse = FALSE)[, 1])
+            candidate = sf_data[hits, , drop = FALSE]
+            if (nrow(candidate) == 0) candidate else sf::st_crop(candidate, bbox)
+          },
+          error = function(e) sf_data
+        ))
+      } else {
+        sf_data
+      }
+
+      if (is.null(cropped) || nrow(cropped) == 0) {
+        return(cropped)
+      }
+
+      validity = suppressWarnings(sf::st_is_valid(cropped))
+      if (all(validity %in% c(TRUE, NA))) {
+        safe_sf = cropped
+      } else {
+        safe_sf = tryCatch(
+          sf::st_make_valid(cropped),
+          error = function(e) suppressWarnings(sf::st_buffer(cropped, 0))
+        )
+      }
+
+      safe_sf[!sf::st_is_empty(safe_sf), , drop = FALSE]
+    }
+
+    perf_state$png_prep_workers = 1L
+
+    # s2 spherical geometry makes crop/validate/intersects on global lat-long
+    # layers extremely slow; use planar GEOS for the export prep only.
+    prev_s2 = sf::sf_use_s2()
+    suppressMessages(sf::sf_use_s2(FALSE))
+    on.exit(suppressMessages(sf::sf_use_s2(prev_s2)), add = TRUE)
+
+    context_polygons = switch(agg_level,
+      "Province-level" = adm1_sel %>% mutate(label_name = Region1),
+      "District-level" = adm2_sel %>% mutate(label_name = Region2),
+      adm0_sel %>% mutate(label_name = Region)
+    )
+    export_bbox = build_export_bbox(context_polygons, SubsetG, bounds)
+
+    ctx_start = proc.time()[["elapsed"]]
+    context_polygons = make_plot_safe_sf(context_polygons, export_bbox)
+    if (agg_level == "Province-level") {
+      context_polygons = context_polygons %>% filter(!(geo_admin1 %in% SubsetG$geo_admin1))
+    } else if (agg_level == "District-level") {
+      context_polygons = context_polygons %>% filter(!(geo_admin2 %in% SubsetG$geo_admin2))
+    } else {
+      context_polygons = context_polygons %>% filter(!(geo_admin0 %in% SubsetG$geo_admin0))
+    }
+    if (nrow(context_polygons) > 250) {
+      context_polygons = context_polygons %>% slice_head(n = 250)
+    }
+    context_labels = if (nrow(context_polygons) > 0) suppressWarnings(sf::st_point_on_surface(context_polygons)) else context_polygons
+    perf_state$png_context_secs = round(proc.time()[["elapsed"]] - ctx_start, 3)
+
+    data_start = proc.time()[["elapsed"]]
+    SubsetG = make_plot_safe_sf(SubsetG, export_bbox)
+    if (agg_level == "Province-level") {
+      SubsetG = SubsetG %>% mutate(data_label = ifelse(Region1 == "Not applicable", Region, Region1))
+    } else if (agg_level == "District-level") {
+      SubsetG = SubsetG %>% mutate(data_label = ifelse(Region2 == "Not applicable", Region1, Region2))
+    } else {
+      SubsetG = SubsetG %>% mutate(data_label = Region)
+    }
+    data_labels = if (nrow(SubsetG) > 0) suppressWarnings(sf::st_point_on_surface(SubsetG)) else SubsetG
+    perf_state$png_data_secs = round(proc.time()[["elapsed"]] - data_start, 3)
+
+    payload = list(
+      SubsetG = SubsetG,
+      context_polygons = context_polygons,
+      context_labels = context_labels,
+      data_labels = data_labels,
+      pts = pts,
+      xlim = xlim,
+      ylim = ylim,
+      legend_vals = pal_metric_r()$legend_vals,
+      MetricN = MetricN_r()
+    )
+
+    png_export_cache(list(key = cache_key, payload = payload))
+    perf_state$png_prep_cache_hit = "no"
+    perf_state$png_prep_secs = round(proc.time()[["elapsed"]] - prep_start, 3)
+    log_trace("png_prep", paste0("cache_hit=no workers=", perf_state$png_prep_workers, " prep_secs=", perf_state$png_prep_secs, " context_secs=", perf_state$png_context_secs, " data_secs=", perf_state$png_data_secs))
+    payload
+  })
+
   # Ported from IthaMaps-shinyapp/app.R lines 757-851: export prediction-mode
   # rasters, cropped figure, and CSV packages from the current prediction view.
   output$download_tif = downloadHandler(
@@ -2871,10 +3078,10 @@ server = function(input, output, session) {
       paste0("IthaMaps_", Sys.Date(), ".zip")
     },
     content = function(file) {
+      set_export_status("Exporting ZIP package... Please wait.")
+      on.exit(clear_export_status(), add = TRUE)
       req(is_prediction_mode())
       assets = prediction_data_r()
-      Notification = showNotification("Export as .zip in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
-      on.exit(removeNotification(Notification), add = TRUE)
 
       export_dir = tempfile("IthaMaps_")
       dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
@@ -2903,9 +3110,9 @@ server = function(input, output, session) {
     },
     content = function(file) {
       if (is_prediction_mode()) {
+        set_export_status("Exporting PNG... Please wait.")
+        on.exit(clear_export_status(), add = TRUE)
         assets = prediction_data_r()
-        Notification = showNotification("Export as .png in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
-        on.exit(removeNotification(Notification), add = TRUE)
 
         ext = current_prediction_extent()
         mean_crop = tryCatch(raster::crop(assets$Mean, ext), error = function(e) assets$Mean)
@@ -2939,26 +3146,21 @@ server = function(input, output, session) {
         showNotification("PNG export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification = showNotification("Export as .png in progress...",
-        type = "message", duration = NULL
-      )
-      on.exit(removeNotification(Notification), add = TRUE)
+      set_export_status("Exporting PNG... Please wait.")
+      on.exit(clear_export_status(), add = TRUE)
 
-      SubsetG = SubsetG_r()
-      MetricN = MetricN_r()
-      pal_metric_obj = pal_metric_r()
-      legend_vals = pal_metric_obj$legend_vals
-      pts = filtered_data() %>%
-        mutate(
-          longitude = suppressWarnings(as.numeric(longitude)),
-          latitude  = suppressWarnings(as.numeric(latitude))
-        ) %>%
-        filter(!is.na(longitude), !is.na(latitude))
+      png_total_start = proc.time()[["elapsed"]]
 
-      # Honour the user's current map viewport if available.
-      bounds = input$map_bounds # list(north, south, east, west) or NULL
-      xlim = if (!is.null(bounds)) c(bounds$west, bounds$east) else NULL
-      ylim = if (!is.null(bounds)) c(bounds$south, bounds$north) else NULL
+      payload = curated_png_payload_r()
+      SubsetG = payload$SubsetG
+      context_polygons = payload$context_polygons
+      context_labels = payload$context_labels
+      data_labels = payload$data_labels
+      pts = payload$pts
+      xlim = payload$xlim
+      ylim = payload$ylim
+      legend_vals = payload$legend_vals
+      MetricN = payload$MetricN
 
       # Build a continuous viridis fill scale matching the interactive map.
       fill_scale = scale_fill_gradientn(
@@ -2968,13 +3170,42 @@ server = function(input, output, session) {
         name     = MetricN
       )
 
-      p = ggplot2::ggplot() +
+      plot_build_start = proc.time()[["elapsed"]]
+      p = ggplot2::ggplot()
+
+      if (nrow(context_polygons) > 0) {
+        p = p +
+          ggplot2::geom_sf(
+            data = context_polygons,
+            fill = "grey88",
+            colour = "grey60",
+            linewidth = 0.2,
+            alpha = 0.9
+          ) +
+          ggplot2::geom_sf_text(
+            data = context_labels,
+            ggplot2::aes(label = label_name),
+            colour = "grey35",
+            size = 2.8,
+            check_overlap = TRUE
+          )
+      }
+
+      p = p +
         ggplot2::geom_sf(
           data = SubsetG,
           ggplot2::aes(fill = Metric),
           colour = "black",
           linewidth = 0.2,
           alpha = 0.8
+        ) +
+        ggplot2::geom_sf_text(
+          data = data_labels,
+          ggplot2::aes(label = data_label),
+          colour = "black",
+          size = 3,
+          fontface = "bold",
+          check_overlap = TRUE
         ) +
         fill_scale +
         ggplot2::geom_point(
@@ -2989,12 +3220,28 @@ server = function(input, output, session) {
           panel.grid = ggplot2::element_line(colour = "grey90"),
           legend.position = "right"
         )
+      perf_state$png_plot_build_secs = round(proc.time()[["elapsed"]] - plot_build_start, 3)
 
       tryCatch(
         {
-          ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = "png")
+          save_start = proc.time()[["elapsed"]]
+          ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = ragg::agg_png, bg = "white")
+          perf_state$png_save_secs = round(proc.time()[["elapsed"]] - save_start, 3)
+          perf_state$png_total_secs = round(proc.time()[["elapsed"]] - png_total_start, 3)
+          log_trace(
+            "png_export",
+            paste0(
+              "prep_cache_hit=", perf_state$png_prep_cache_hit %||% "unknown",
+              " prep_secs=", perf_state$png_prep_secs %||% NA_real_,
+              " plot_build_secs=", perf_state$png_plot_build_secs %||% NA_real_,
+              " save_secs=", perf_state$png_save_secs %||% NA_real_,
+              " total_secs=", perf_state$png_total_secs %||% NA_real_
+            )
+          )
         },
         error = function(e) {
+          perf_state$png_total_secs = round(proc.time()[["elapsed"]] - png_total_start, 3)
+          log_trace("png_export_error", conditionMessage(e))
           showNotification(paste("PNG export failed:", conditionMessage(e)), type = "error", duration = 8)
           stop(e)
         }
@@ -3011,10 +3258,10 @@ server = function(input, output, session) {
       }
     },
     content = function(file) {
+      set_export_status("Exporting CSV... Please wait.")
+      on.exit(clear_export_status(), add = TRUE)
       if (is_prediction_mode()) {
         assets = prediction_data_r()
-        Notification = showNotification("Export as .csv in progress... Please wait until export completes before adjusting map options.", type = "message", duration = NULL)
-        on.exit(removeNotification(Notification), add = TRUE)
 
         export_dir = tempfile("IthaMaps_csv_")
         dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
@@ -3030,9 +3277,6 @@ server = function(input, output, session) {
         return(invisible(NULL))
       }
 
-      Notification = showNotification("Export as .csv in progress... Please wait until export completes before adjusting filter options.",
-        type = "message", duration = NULL
-      )
       if (is_hcp_mode()) {
         SubsetHCP = SubsetHCP_r()
         idx0 = match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
@@ -3055,7 +3299,6 @@ server = function(input, output, session) {
             "Notes" = "note", "Source" = "citation_str"
           )))
         write.csv(df, file, row.names = FALSE)
-        removeNotification(Notification)
         return(invisible(NULL))
       }
       SubsetE = SubsetE_r()
@@ -3084,7 +3327,6 @@ server = function(input, output, session) {
           "Notes", "Source"
         )
       write.csv(df, file, row.names = FALSE)
-      removeNotification(Notification)
     }
   )
 
@@ -3093,6 +3335,8 @@ server = function(input, output, session) {
       paste0("IthaMaps_", Sys.Date(), ".geojson")
     },
     content = function(file) {
+      set_export_status("Exporting GeoJSON... Please wait.")
+      on.exit(clear_export_status(), add = TRUE)
       if (is_prediction_mode()) {
         showNotification("GeoJSON export is not available for prediction raster data.", type = "warning", duration = 4)
         return(invisible(NULL))
@@ -3101,9 +3345,6 @@ server = function(input, output, session) {
         showNotification("GeoJSON export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification = showNotification("Export as .geojson in progress... Please wait until export completes before adjusting filter options.",
-        type = "message", duration = NULL
-      )
       SubsetE = SubsetE_r()
       sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
@@ -3132,7 +3373,6 @@ server = function(input, output, session) {
           "Notes", "Source"
         )
       st_write(sf_df, file, driver = "GeoJSON", delete_dsn = TRUE)
-      removeNotification(Notification)
     }
   )
 
@@ -3141,6 +3381,8 @@ server = function(input, output, session) {
       paste0("IthaMaps_", Sys.Date(), ".gpkg")
     },
     content = function(file) {
+      set_export_status("Exporting GPKG... Please wait.")
+      on.exit(clear_export_status(), add = TRUE)
       if (is_prediction_mode()) {
         showNotification("GPKG export is not available for prediction raster data.", type = "warning", duration = 4)
         return(invisible(NULL))
@@ -3149,9 +3391,6 @@ server = function(input, output, session) {
         showNotification("GPKG export is not available for Healthcare availability data.", type = "warning", duration = 4)
         return(invisible(NULL))
       }
-      Notification = showNotification("Export as .gpkg in progress... Please wait until export completes before adjusting filter options.",
-        type = "message", duration = NULL
-      )
       SubsetE = SubsetE_r()
       sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
@@ -3180,7 +3419,6 @@ server = function(input, output, session) {
           "Notes", "Source"
         )
       st_write(sf_df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
-      removeNotification(Notification)
     }
   )
 
@@ -3275,7 +3513,15 @@ server = function(input, output, session) {
       "Polygon subset" = if (!is.null(timings$polygon_subset)) sprintf("%.3fs", timings$polygon_subset) else NA_character_,
       "Query bundle total" = if (!is.null(timings$total_query_bundle)) sprintf("%.3fs", timings$total_query_bundle) else NA_character_,
       "Map render" = if (!is.null(perf_state$map_render_secs)) sprintf("%.3fs", perf_state$map_render_secs) else NA_character_,
-      "Table render" = if (!is.null(perf_state$table_render_secs)) sprintf("%.3fs", perf_state$table_render_secs) else NA_character_
+      "Table render" = if (!is.null(perf_state$table_render_secs)) sprintf("%.3fs", perf_state$table_render_secs) else NA_character_,
+      "PNG prep cache hit" = if (!is.null(perf_state$png_prep_cache_hit)) perf_state$png_prep_cache_hit else NA_character_,
+      "PNG prep workers" = if (!is.null(perf_state$png_prep_workers)) as.character(perf_state$png_prep_workers) else NA_character_,
+      "PNG prep" = if (!is.null(perf_state$png_prep_secs)) sprintf("%.3fs", perf_state$png_prep_secs) else NA_character_,
+      "PNG context prep" = if (!is.null(perf_state$png_context_secs)) sprintf("%.3fs", perf_state$png_context_secs) else NA_character_,
+      "PNG data prep" = if (!is.null(perf_state$png_data_secs)) sprintf("%.3fs", perf_state$png_data_secs) else NA_character_,
+      "PNG plot build" = if (!is.null(perf_state$png_plot_build_secs)) sprintf("%.3fs", perf_state$png_plot_build_secs) else NA_character_,
+      "PNG save" = if (!is.null(perf_state$png_save_secs)) sprintf("%.3fs", perf_state$png_save_secs) else NA_character_,
+      "PNG export total" = if (!is.null(perf_state$png_total_secs)) sprintf("%.3fs", perf_state$png_total_secs) else NA_character_
     )
 
     timing_rows = timing_rows[!is.na(timing_rows)]
