@@ -2309,6 +2309,18 @@ server = function(input, output, session) {
     if (is_hcp_mode()) {
       return(NULL)
     }
+
+    lighten_colour = function(colour, fraction = 0.25) {
+      rgba = grDevices::col2rgb(colour, alpha = TRUE) / 255
+      lighter_rgb = rgba[1:3, , drop = FALSE] + (1 - rgba[1:3, , drop = FALSE]) * fraction
+      grDevices::rgb(
+        lighter_rgb[1, 1],
+        lighter_rgb[2, 1],
+        lighter_rgb[3, 1],
+        alpha = rgba[4, 1]
+      )
+    }
+
     SubsetG = SubsetG_r()
     viridis_palette = viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1)
     metric_values = SubsetG$Metric
@@ -2319,14 +2331,25 @@ server = function(input, output, session) {
       # fall back to a unit interval when the single value is itself 0.
       lower = if (unique_vals[1] > 0) 0 else -1
       expanded = c(lower, unique_vals[1])
+      single_value = as.numeric(unique_vals[1])
+      single_pal = colorNumeric(palette = viridis_palette, domain = expanded)
+      single_colour = lighten_colour(single_pal(single_value), fraction = 0.25)
       list(
-        pal         = colorNumeric(palette = viridis_palette, domain = expanded),
-        legend_vals = expanded
+        pal           = function(x) {
+          out = rep(single_colour, length(x))
+          out[is.na(x)] = NA_character_
+          out
+        },
+        legend_vals   = expanded,
+        single_value  = single_value,
+        single_colour = single_colour
       )
     } else {
       list(
-        pal         = colorNumeric(palette = viridis_palette, domain = metric_values),
-        legend_vals = metric_values
+        pal           = colorNumeric(palette = viridis_palette, domain = metric_values),
+        legend_vals   = metric_values,
+        single_value  = NULL,
+        single_colour = NULL
       )
     }
   })
@@ -2385,8 +2408,15 @@ server = function(input, output, session) {
     zoomControl = TRUE
   )
 
+  map_fill_opacity = 0.8
+
   prediction_legend_bar = function(palette_values, title, min_value, max_value) {
-    gradient = paste0(palette_values, collapse = ", ")
+    legend_colours = vapply(
+      palette_values,
+      function(colour) grDevices::adjustcolor(colour, alpha.f = map_fill_opacity),
+      character(1)
+    )
+    gradient = paste0(legend_colours, collapse = ", ")
     HTML(paste0(
       "<div class='raster-legend'><div class='raster-legend-title'>", title, "</div>",
       "<div class='raster-legend-bar' style='background: linear-gradient(to right, ", gradient, ");'></div>",
@@ -2678,6 +2708,8 @@ server = function(input, output, session) {
     pal_metric_obj = pal_metric_r()
     pal_metric = pal_metric_obj$pal
     legend_vals = pal_metric_obj$legend_vals
+    single_value = pal_metric_obj$single_value
+    single_colour = pal_metric_obj$single_colour
     data = filtered_data()
 
     map_widget = leaflet(data, options = default_leaflet_options) %>%
@@ -2707,7 +2739,7 @@ server = function(input, output, session) {
         weight = 0.3,
         opacity = 1,
         color = "black",
-        fillOpacity = 0.8,
+        fillOpacity = map_fill_opacity,
         smoothFactor = 0.5,
         highlightOptions = highlightOptions(
           weight = 1.4,
@@ -2717,14 +2749,29 @@ server = function(input, output, session) {
           bringToFront = FALSE
         ),
         fillColor = ~ pal_metric(Metric)
-      ) %>%
-      addLegend(
-        pal = pal_metric,
-        values = legend_vals,
-        title = MetricN,
-        opacity = 1,
-        position = "bottomright"
-      ) %>%
+      )
+
+    if (!is.null(single_value) && !is.null(single_colour)) {
+      map_widget = map_widget %>%
+        addLegend(
+          colors = single_colour,
+          labels = format(round(single_value, 2), nsmall = 2, trim = TRUE),
+          title = MetricN,
+          opacity = map_fill_opacity,
+          position = "bottomright"
+        )
+    } else {
+      map_widget = map_widget %>%
+        addLegend(
+          pal = pal_metric,
+          values = legend_vals,
+          title = MetricN,
+          opacity = map_fill_opacity,
+          position = "bottomright"
+        )
+    }
+
+    map_widget = map_widget %>%
       htmlwidgets::onRender(cluster_hover_js("black", "white"))
 
     perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
@@ -3061,6 +3108,8 @@ server = function(input, output, session) {
       xlim = xlim,
       ylim = ylim,
       legend_vals = pal_metric_r()$legend_vals,
+      single_value = pal_metric_r()$single_value,
+      single_colour = pal_metric_r()$single_colour,
       MetricN = MetricN_r()
     )
 
@@ -3160,15 +3209,43 @@ server = function(input, output, session) {
       xlim = payload$xlim
       ylim = payload$ylim
       legend_vals = payload$legend_vals
+      single_value = payload$single_value
+      single_colour = payload$single_colour
       MetricN = payload$MetricN
 
-      # Build a continuous viridis fill scale matching the interactive map.
-      fill_scale = scale_fill_gradientn(
-        colours  = viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1),
-        limits   = range(legend_vals, na.rm = TRUE),
-        na.value = "grey80",
-        name     = MetricN
-      )
+      plot_subsetg = SubsetG
+      fill_mapping = ggplot2::aes(fill = Metric)
+
+      if (!is.null(single_value) && !is.null(single_colour)) {
+        single_label = format(round(single_value, 2), nsmall = 2, trim = TRUE)
+        plot_subsetg = SubsetG %>% mutate(single_metric_label = single_label)
+        fill_mapping = ggplot2::aes(fill = single_metric_label)
+        single_colour_png = grDevices::adjustcolor(single_colour, alpha.f = map_fill_opacity)
+        fill_scale = ggplot2::scale_fill_manual(
+          values = stats::setNames(single_colour_png, single_label),
+          name = MetricN,
+          drop = FALSE,
+          guide = ggplot2::guide_legend(
+            keywidth = grid::unit(8, "mm"),
+            keyheight = grid::unit(8, "mm")
+          )
+        )
+      } else {
+        png_palette = viridis::viridis(81, option = "F", begin = 0, end = 0.7, direction = -1)
+        png_palette = vapply(
+          png_palette,
+          function(colour) grDevices::adjustcolor(colour, alpha.f = map_fill_opacity),
+          character(1)
+        )
+        # Build a continuous viridis fill scale matching the interactive map.
+        fill_scale = scale_fill_gradientn(
+          colours  = png_palette,
+          limits   = range(legend_vals, na.rm = TRUE),
+          na.value = "grey80",
+          name     = MetricN,
+          guide    = ggplot2::guide_colorbar(reverse = TRUE)
+        )
+      }
 
       plot_build_start = proc.time()[["elapsed"]]
       p = ggplot2::ggplot()
@@ -3193,8 +3270,8 @@ server = function(input, output, session) {
 
       p = p +
         ggplot2::geom_sf(
-          data = SubsetG,
-          ggplot2::aes(fill = Metric),
+          data = plot_subsetg,
+          fill_mapping,
           colour = "black",
           linewidth = 0.2,
           alpha = 0.8
