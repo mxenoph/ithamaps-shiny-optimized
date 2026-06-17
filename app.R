@@ -2748,6 +2748,24 @@ server = function(input, output, session) {
     single_colour = pal_metric_obj$single_colour
     data = filtered_data()
 
+    SubsetG = SubsetG %>%
+      mutate(
+        hover_region = dplyr::case_when(
+          !is.na(Region2) & Region2 != "" & Region2 != "Not applicable" ~ Region2,
+          !is.na(Region1) & Region1 != "" & Region1 != "Not applicable" ~ Region1,
+          TRUE ~ Region
+        ),
+        hover_metric = ifelse(
+          is.na(Metric),
+          "No data",
+          format(round(as.numeric(Metric), 2), nsmall = 2, trim = TRUE)
+        ),
+        hover_label = paste0(
+          "<strong>", hover_region, "</strong><br>",
+          MetricN, ": ", hover_metric
+        )
+      )
+
     map_widget = leaflet(data, options = default_leaflet_options) %>%
       addProviderTiles("CartoDB.Positron") %>%
       addScaleBar(position = "bottomleft") %>%
@@ -2783,6 +2801,12 @@ server = function(input, output, session) {
           fillOpacity = 0.5,
           fillColor = "#0000CC",
           bringToFront = FALSE
+        ),
+        label = ~ lapply(hover_label, HTML),
+        labelOptions = labelOptions(
+          direction = "auto",
+          textsize = "12px",
+          style = list("padding" = "4px 6px")
         ),
         fillColor = ~ pal_metric(Metric)
       )
