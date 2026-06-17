@@ -84,6 +84,42 @@ scalar_port = function(value, field_name = "port") {
 
 Configuration = pick_configuration()
 
+read_db_prefixes = function(path = "secrets/db_prefix") {
+  defaults = list(
+    ithabase_prefix = "_live",
+    joomla_prefix = "_live"
+  )
+
+  if (!file.exists(path)) {
+    return(defaults)
+  }
+
+  lines = readLines(path, warn = FALSE)
+  lines = trimws(lines)
+  lines = lines[nzchar(lines)]
+  lines = lines[!startsWith(lines, "#")]
+
+  for (line in lines) {
+    parts = strsplit(line, "=", fixed = TRUE)[[1]]
+    if (length(parts) < 2) {
+      next
+    }
+    key = trimws(parts[1])
+    value = trimws(paste(parts[-1], collapse = "="))
+    value = gsub('^"|"$', "", value)
+    value = gsub("^'|'$", "", value)
+    if (key %in% names(defaults) && nzchar(value)) {
+      defaults[[key]] = value
+    }
+  }
+
+  defaults
+}
+
+db_prefixes = read_db_prefixes()
+ithanet_dbname = paste0("ithabase", db_prefixes$ithabase_prefix)
+joomla_dbname = paste0("joomla", db_prefixes$joomla_prefix)
+
 # ---------------------------------------------------------------------------
 # open_mariadb_connection(): connect using correct RMariaDB argument names
 # ---------------------------------------------------------------------------
@@ -102,7 +138,7 @@ open_mariadb_connection = function(dbname, cfg) {
 }
 
 # Connection to ITHANET
-Ithanet = open_mariadb_connection("ithabase_mk", Configuration)
+Ithanet = open_mariadb_connection(ithanet_dbname, Configuration)
 
 Datatables = dbListTables(Ithanet)
 Datatables = Datatables[Datatables %in% c(
@@ -142,7 +178,7 @@ dbDisconnect(Ithanet)
 rm(Ithanet, Data, Datatables)
 
 # Connection to joomla
-Joomla = open_mariadb_connection("joomla_live", Configuration)
+Joomla = open_mariadb_connection(joomla_dbname, Configuration)
 
 Datatables = dbListTables(Joomla)
 Datatables = Datatables[Datatables %in% c("itha_experts")]
