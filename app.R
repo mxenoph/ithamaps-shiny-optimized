@@ -1819,6 +1819,30 @@ server = function(input, output, session) {
   selected_prediction_point = reactiveVal(NULL)
   export_status_text = reactiveVal("")
 
+  local_rows_from_table_rows = function(table_rows) {
+    if (is.null(table_rows) || length(table_rows) == 0) {
+      return(NULL)
+    }
+    table_rows = as.integer(table_rows[[1]])
+    rows_all = input$data_table_rows_all
+    if (is.null(rows_all)) {
+      return(table_rows)
+    }
+    local_row = match(table_rows, rows_all)
+    if (is.na(local_row)) NULL else as.integer(local_row)
+  }
+
+  table_rows_from_local_rows = function(local_rows) {
+    if (is.null(local_rows) || length(local_rows) == 0) {
+      return(integer(0))
+    }
+    local_rows = as.integer(local_rows[[1]])
+    rows_all = input$data_table_rows_all
+    out = if (is.null(rows_all)) local_rows else rows_all[local_rows]
+    out = as.integer(out[!is.na(out)])
+    if (length(out) == 0) integer(0) else out[[1]]
+  }
+
   set_export_status = function(msg) {
     text = msg %||% ""
     export_status_text(text)
@@ -1952,6 +1976,10 @@ server = function(input, output, session) {
               div(
                 class = "col-12 text-muted",
                 "Circles show unique records. Numbered black circles indicate multiple records at that location. Click any marker for more details."
+              ),
+              div(
+                class = "col-12 text-muted mt-1",
+                "Table column filters update displayed records (table rows and black circles) only. Polygon colours and metric legends are not recomputed from table-filtered subsets."
               )
             )
           )
@@ -2185,7 +2213,7 @@ server = function(input, output, session) {
   })
 
   observeEvent(input$data_table_rows_selected, {
-    selected_row(input$data_table_rows_selected)
+    selected_row(local_rows_from_table_rows(input$data_table_rows_selected))
   })
 
   observeEvent(filtered_data(),
@@ -2198,10 +2226,9 @@ server = function(input, output, session) {
 
   observe({
     req(!is_prediction_mode())
-    req(selected_row())
     proxy = leafletProxy("map", data = filtered_data())
     proxy %>% clearGroup("highlight")
-    if (!is.null(selected_row())) {
+    if (!is.null(selected_row()) && length(selected_row()) > 0) {
       data = filtered_data()[selected_row(), ]
       proxy %>%
         addCircleMarkers(
@@ -2211,7 +2238,7 @@ server = function(input, output, session) {
           color = "#0000CC",
           fillColor = "#0000CC",
           weight = 2,
-          radius = 12,
+          radius = 7,
           fillOpacity = 1,
           group = "highlight"
         )
@@ -2417,11 +2444,13 @@ server = function(input, output, session) {
       "    var layer = e.layer;",
       "    if (layer instanceof L.CircleMarker && !layer.getChildCount) {",
       "      layer.on('mouseover', function() {",
-      "        this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC'});",
+      "        if (this.options && this.options.group === 'highlight') { return; }",
+      "        this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 0.5});",
       "        this.bringToFront();",
       "      });",
       "      layer.on('mouseout', function() {",
-      sprintf("        this.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s'});", default_stroke, default_fill),
+      "        if (this.options && this.options.group === 'highlight') { return; }",
+      sprintf("        this.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
       "      });",
       "    }",
       "  });",
@@ -3570,8 +3599,19 @@ server = function(input, output, session) {
       dists = (lng - click$lng)^2 + (lat - click$lat)^2
       dists[is.na(dists)] = Inf
       nearest_idx = which.min(dists)
+
+      selected_row(nearest_idx)
       selected_marker_idx(nearest_idx)
       selected_shape_idx(NULL)
+
+      table_rows = table_rows_from_local_rows(nearest_idx)
+      if (length(table_rows) > 0) {
+        page_length = 10L
+        target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
+        proxy = dataTableProxy("data_table")
+        proxy %>% selectPage(target_page)
+        proxy %>% selectRows(table_rows)
+      }
     }
   })
 
@@ -3587,9 +3627,44 @@ server = function(input, output, session) {
       clicked_shape = st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
       dists = st_distance(clicked_shape, st_centroid(SubsetG))
       nearest_idx = which.min(dists)
+
+      data = filtered_data()
+      selected_rows = integer(0)
+      selected_shape = SubsetG[nearest_idx, , drop = FALSE]
+
+      if ("geo_admin2" %in% names(selected_shape) && "geo_admin2" %in% names(data) && !is.na(selected_shape$geo_admin2[[1]])) {
+        selected_rows = which(data$geo_admin2 == selected_shape$geo_admin2[[1]])
+      } else if ("geo_admin1" %in% names(selected_shape) && "geo_admin1" %in% names(data) && !is.na(selected_shape$geo_admin1[[1]])) {
+        selected_rows = which(data$geo_admin1 == selected_shape$geo_admin1[[1]])
+      } else if ("geo_admin0" %in% names(selected_shape) && "geo_admin0" %in% names(data) && !is.na(selected_shape$geo_admin0[[1]])) {
+        selected_rows = which(data$geo_admin0 == selected_shape$geo_admin0[[1]])
+      }
+
+      if (length(selected_rows) > 0) {
+        selected_row(selected_rows[[1]])
+        table_rows = table_rows_from_local_rows(selected_rows[[1]])
+        if (length(table_rows) > 0) {
+          page_length = 10L
+          target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
+          proxy = dataTableProxy("data_table")
+          proxy %>% selectPage(target_page)
+          proxy %>% selectRows(table_rows)
+        }
+      }
+
       selected_shape_idx(nearest_idx)
       selected_marker_idx(NULL)
     }
+  })
+
+  observeEvent(input$clear_selection_btn, {
+    selected_row(NULL)
+    selected_marker_idx(NULL)
+    selected_shape_idx(NULL)
+    dataTableProxy("data_table") %>%
+      selectRows(NULL)
+    leafletProxy("map") %>%
+      clearGroup("highlight")
   })
 
   output$custom_popup = renderUI({
@@ -3600,18 +3675,34 @@ server = function(input, output, session) {
     marker_idx = selected_marker_idx()
     shape_idx = selected_shape_idx()
 
+    details_ui = NULL
+
     if (!is.null(marker_idx)) {
       popup_content = popup_content_r()
       if (marker_idx >= 1 && marker_idx <= length(popup_content)) {
-        return(popup_content[[marker_idx]])
+        details_ui = popup_content[[marker_idx]]
       }
     }
 
-    if (!is.null(shape_idx) && !is_hcp_mode()) {
+    if (is.null(details_ui) && !is.null(shape_idx) && !is_hcp_mode()) {
       popup_contentA = popup_contentA_r()
       if (shape_idx >= 1 && shape_idx <= length(popup_contentA)) {
-        return(popup_contentA[[shape_idx]])
+        details_ui = popup_contentA[[shape_idx]]
       }
+    }
+
+    has_selection = !is.null(marker_idx) || !is.null(shape_idx) || (!is.null(selected_row()) && length(selected_row()) > 0)
+
+    if (!is.null(details_ui)) {
+      return(tagList(
+        if (has_selection) {
+          div(
+            style = "margin-bottom: 8px;",
+            actionButton("clear_selection_btn", "Clear selection", class = "btn btn-outline-secondary btn-sm")
+          )
+        },
+        details_ui
+      ))
     }
 
     summary_panel_r()
