@@ -1816,6 +1816,7 @@ server = function(input, output, session) {
   selected_marker_idx = reactiveVal(NULL)
   selected_shape_idx = reactiveVal(NULL)
   selected_row = reactiveVal(NULL)
+  selected_marker_layer_id = reactiveVal(NULL)
   selected_prediction_point = reactiveVal(NULL)
   export_status_text = reactiveVal("")
 
@@ -2212,13 +2213,47 @@ server = function(input, output, session) {
     curated_query_box_html()
   })
 
+  table_toggle_clear_callback = JS(
+    "table.on('user-select', function(e, dt, type, cell) {",
+    "  if (type !== 'row') { return; }",
+    "  var row = table.row(cell.index().row);",
+    "  var rowNode = row.node();",
+    "  if ($(rowNode).hasClass('selected')) {",
+    "    e.preventDefault();",
+    "    table.rows().deselect();",
+    "    Shiny.setInputValue('data_table_clear_selection_click', Date.now(), {priority: 'event'});",
+    "  }",
+    "});"
+  )
+
   observeEvent(input$data_table_rows_selected, {
-    selected_row(local_rows_from_table_rows(input$data_table_rows_selected))
+    row_local = local_rows_from_table_rows(input$data_table_rows_selected)
+    selected_row(row_local)
+    if (is.null(row_local)) {
+      selected_marker_idx(NULL)
+      selected_marker_layer_id(NULL)
+      selected_shape_idx(NULL)
+    } else {
+      row_idx = as.integer(row_local[[1]])
+      selected_marker_idx(row_idx)
+      selected_marker_layer_id(paste0("row_", row_idx))
+      selected_shape_idx(NULL)
+    }
+  })
+
+  observeEvent(input$data_table_clear_selection_click, {
+    selected_row(NULL)
+    selected_marker_idx(NULL)
+    selected_marker_layer_id(NULL)
+    selected_shape_idx(NULL)
+    dataTableProxy("data_table") %>%
+      selectRows(NULL)
   })
 
   observeEvent(filtered_data(),
     {
       selected_marker_idx(NULL)
+      selected_marker_layer_id(NULL)
       selected_shape_idx(NULL)
     },
     ignoreInit = TRUE
@@ -2226,23 +2261,11 @@ server = function(input, output, session) {
 
   observe({
     req(!is_prediction_mode())
-    proxy = leafletProxy("map", data = filtered_data())
-    proxy %>% clearGroup("highlight")
-    if (!is.null(selected_row()) && length(selected_row()) > 0) {
-      data = filtered_data()[selected_row(), ]
-      proxy %>%
-        addCircleMarkers(
-          data = data,
-          lat = ~ as.numeric(latitude),
-          lng = ~ as.numeric(longitude),
-          color = "#0000CC",
-          fillColor = "#0000CC",
-          weight = 2,
-          radius = 7,
-          fillOpacity = 1,
-          group = "highlight"
-        )
-    }
+    req(data_available())
+    session$sendCustomMessage("ithamaps-select-layer", list(
+      mapId = "map",
+      layerId = selected_marker_layer_id()
+    ))
   })
 
   popup_contentA_r = reactive({
@@ -2425,35 +2448,139 @@ server = function(input, output, session) {
     paste(
       "function(el, x) {",
       "  var map = this;",
+      "  var selectedLayerId = null;",
+      "  var markerClusterGroup = null;",
+      "",
+      "  function getClusterGroup() {",
+      "    if (markerClusterGroup) { return markerClusterGroup; }",
+      "    map.eachLayer(function(layer) {",
+      "      if (!markerClusterGroup && typeof L.MarkerClusterGroup !== 'undefined' && layer instanceof L.MarkerClusterGroup) {",
+      "        markerClusterGroup = layer;",
+      "      }",
+      "    });",
+      "    return markerClusterGroup;",
+      "  }",
+      "",
+      "  function setClusterIcon(layer, isSelected) {",
+      "    if (!layer || !layer.getChildCount || !layer._icon) { return; }",
+      "    var count = layer.getChildCount();",
+      "    var color = isSelected ? '#0000CC' : 'black';",
+      "    var icon = L.divIcon({",
+      "      html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>',",
+      "      className: '',",
+      "      iconSize: new L.Point(20, 20)",
+      "    });",
+      "    layer.setIcon(icon);",
+      "  }",
+      "",
+      "  function clusterContainsSelected(clusterLayer) {",
+      "    if (!selectedLayerId || !clusterLayer || !clusterLayer.getAllChildMarkers) { return false; }",
+      "    var contains = false;",
+      "    try {",
+      "      var kids = clusterLayer.getAllChildMarkers();",
+      "      for (var i = 0; i < kids.length; i++) {",
+      "        var k = kids[i];",
+      "        if (k && k.options && String(k.options.layerId) === String(selectedLayerId)) { contains = true; break; }",
+      "      }",
+      "    } catch (err) { contains = false; }",
+      "    return contains;",
+      "  }",
+      "",
+      "  function recolorClusters() {",
+      "    var group = getClusterGroup();",
+      "    if (!group) { return; }",
+      "    try {",
+      "      map.eachLayer(function(layer) {",
+      "        if (layer && layer.getChildCount && layer._icon) {",
+      "          setClusterIcon(layer, clusterContainsSelected(layer));",
+      "        }",
+      "      });",
+      "    } catch (err) {}",
+      "  }",
+      "",
+      "  function styleSelectedMarker(layer) {",
+      "    if (!layer) { return; }",
+      "    layer.setStyle({radius: 8, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 1});",
+      "    if (layer.bringToFront) { try { layer.bringToFront(); } catch (e) {} }",
+      "  }",
+      "",
+      "  function resetMarker(layer) {",
+      "    if (!layer) { return; }",
+      sprintf("    layer.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
+      "  }",
+      "",
+      "  function isSelectedMarker(layer) {",
+      "    return !!(selectedLayerId && layer && layer.options && String(layer.options.layerId) === String(selectedLayerId));",
+      "  }",
+      "",
+      "  function recolorMarkers() {",
+      "    try {",
+      "      map.eachLayer(function(layer) {",
+      "        if (layer instanceof L.CircleMarker && !layer.getChildCount && layer.options) {",
+      "          if (isSelectedMarker(layer)) {",
+      "            styleSelectedMarker(layer);",
+      "          } else {",
+      "            resetMarker(layer);",
+      "          }",
+      "        }",
+      "      });",
+      "      var group = getClusterGroup();",
+      "      if (group && group.eachLayer) {",
+      "        group.eachLayer(function(layer) {",
+      "          if (layer instanceof L.CircleMarker && !layer.getChildCount && layer.options) {",
+      "            if (isSelectedMarker(layer)) {",
+      "              styleSelectedMarker(layer);",
+      "            } else {",
+      "              resetMarker(layer);",
+      "            }",
+      "          }",
+      "        });",
+      "      }",
+      "    } catch (err) {}",
+      "  }",
       "",
       "  map.on('layeradd', function(e) {",
       "    var layer = e.layer;",
-      "    if (layer.getChildCount && layer._icon) {",
-      "      var count = layer.getChildCount();",
-      "      var color = 'black';",
-      "      var icon = L.divIcon({",
-      "        html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>',",
-      "        className: '',",
-      "        iconSize: new L.Point(20, 20)",
-      "      });",
-      "      layer.setIcon(icon);",
+      "    if (layer && layer.getChildCount && layer._icon) {",
+      "      setClusterIcon(layer, clusterContainsSelected(layer));",
       "    }",
       "  });",
       "",
       "  map.on('layeradd', function(e) {",
       "    var layer = e.layer;",
       "    if (layer instanceof L.CircleMarker && !layer.getChildCount) {",
+      "      if (isSelectedMarker(layer)) {",
+      "        styleSelectedMarker(layer);",
+      "      }",
       "      layer.on('mouseover', function() {",
-      "        if (this.options && this.options.group === 'highlight') { return; }",
+      "        if (isSelectedMarker(this)) { return; }",
       "        this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 0.5});",
       "        this.bringToFront();",
       "      });",
       "      layer.on('mouseout', function() {",
-      "        if (this.options && this.options.group === 'highlight') { return; }",
+      "        if (isSelectedMarker(this)) { styleSelectedMarker(this); return; }",
       sprintf("        this.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
       "      });",
       "    }",
       "  });",
+      "",
+      "  window.__ithamapsSelectLayerAppliers = window.__ithamapsSelectLayerAppliers || {};",
+      "  window.__ithamapsSelectLayerAppliers[el.id] = function(layerId) {",
+      "    selectedLayerId = (layerId === null || layerId === undefined || layerId === '') ? null : String(layerId);",
+      "    recolorClusters();",
+      "    recolorMarkers();",
+      "  };",
+      "",
+      "  if (!window.__ithamapsSelectLayerHandlerRegistered && typeof Shiny !== 'undefined' && Shiny.addCustomMessageHandler) {",
+      "    window.__ithamapsSelectLayerHandlerRegistered = true;",
+      "    Shiny.addCustomMessageHandler('ithamaps-select-layer', function(msg) {",
+      "      if (!msg || !msg.mapId) { return; }",
+      "      var applier = window.__ithamapsSelectLayerAppliers && window.__ithamapsSelectLayerAppliers[msg.mapId];",
+      "      if (typeof applier === 'function') {",
+      "        applier(msg.layerId);",
+      "      }",
+      "    });",
+      "  }",
       "}",
       sep = "\n"
     )
@@ -2739,7 +2866,8 @@ server = function(input, output, session) {
     render_start = proc.time()[["elapsed"]]
 
     if (is_hcp_mode()) {
-      data = SubsetHCP_r()
+      data = SubsetHCP_r() %>%
+        mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
       map_widget = leaflet(options = default_leaflet_options) %>%
         addProviderTiles("CartoDB.Positron") %>%
         addScaleBar(position = "bottomleft") %>%
@@ -2747,6 +2875,7 @@ server = function(input, output, session) {
           data = data,
           lat = ~ as.numeric(latitude),
           lng = ~ as.numeric(longitude),
+          layerId = ~ marker_layer_id,
           stroke = TRUE,
           color = "white",
           weight = 1,
@@ -2775,7 +2904,8 @@ server = function(input, output, session) {
     legend_vals = pal_metric_obj$legend_vals
     single_value = pal_metric_obj$single_value
     single_colour = pal_metric_obj$single_colour
-    data = filtered_data()
+    data = filtered_data() %>%
+      mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
 
     SubsetG = SubsetG %>%
       mutate(
@@ -2799,8 +2929,10 @@ server = function(input, output, session) {
       addProviderTiles("CartoDB.Positron") %>%
       addScaleBar(position = "bottomleft") %>%
       addCircleMarkers(
+        data = data,
         lat = ~ as.numeric(latitude),
         lng = ~ as.numeric(longitude),
+        layerId = ~ marker_layer_id,
         stroke = TRUE,
         color = "white",
         weight = 1,
@@ -2989,6 +3121,7 @@ server = function(input, output, session) {
           rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
           columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
         ),
+        callback = table_toggle_clear_callback,
         class = "stripe hover cell-border"
       )
       perf_state$table_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
@@ -3040,6 +3173,7 @@ server = function(input, output, session) {
         rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
         columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
       ),
+      callback = table_toggle_clear_callback,
       class = "stripe hover cell-border"
     )
     perf_state$table_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
@@ -3594,14 +3728,34 @@ server = function(input, output, session) {
     click = input$map_marker_click
     data = filtered_data()
     if (!is.null(click)) {
-      lng = suppressWarnings(as.numeric(data$longitude))
-      lat = suppressWarnings(as.numeric(data$latitude))
-      dists = (lng - click$lng)^2 + (lat - click$lat)^2
-      dists[is.na(dists)] = Inf
-      nearest_idx = which.min(dists)
+      nearest_idx = NA_integer_
+      click_id = click$id %||% NULL
+
+      if (!is.null(click_id)) {
+        click_id_chr = as.character(click_id)
+        if (grepl("^row_[0-9]+$", click_id_chr)) {
+          parsed_idx = suppressWarnings(as.integer(sub("^row_", "", click_id_chr)))
+          if (!is.na(parsed_idx) && parsed_idx >= 1L && parsed_idx <= nrow(data)) {
+            nearest_idx = parsed_idx
+          }
+        }
+      }
+
+      if (is.na(nearest_idx)) {
+        lng = suppressWarnings(as.numeric(data$longitude))
+        lat = suppressWarnings(as.numeric(data$latitude))
+        dists = (lng - click$lng)^2 + (lat - click$lat)^2
+        dists[is.na(dists)] = Inf
+        nearest_idx = which.min(dists)
+      }
+
+      if (!is.finite(nearest_idx) || is.na(nearest_idx) || nearest_idx < 1L || nearest_idx > nrow(data)) {
+        return(invisible(NULL))
+      }
 
       selected_row(nearest_idx)
       selected_marker_idx(nearest_idx)
+      selected_marker_layer_id(paste0("row_", nearest_idx))
       selected_shape_idx(NULL)
 
       table_rows = table_rows_from_local_rows(nearest_idx)
@@ -3654,17 +3808,17 @@ server = function(input, output, session) {
 
       selected_shape_idx(nearest_idx)
       selected_marker_idx(NULL)
+      selected_marker_layer_id(NULL)
     }
   })
 
   observeEvent(input$clear_selection_btn, {
     selected_row(NULL)
     selected_marker_idx(NULL)
+    selected_marker_layer_id(NULL)
     selected_shape_idx(NULL)
     dataTableProxy("data_table") %>%
       selectRows(NULL)
-    leafletProxy("map") %>%
-      clearGroup("highlight")
   })
 
   output$custom_popup = renderUI({
