@@ -1961,6 +1961,17 @@ server = function(input, output, session) {
     }
   })
 
+  # Debounced view of filtered_data used only for the (expensive) full map
+  # re-render. DT emits input$data_table_rows_all asynchronously after the table
+  # first draws and again on every redraw, which would otherwise re-execute
+  # renderLeaflet several times in quick succession at startup (visible as the
+  # map greying out / reloading a couple of times). Debouncing collapses those
+  # rapid, often identical, invalidations into a single render. Selection
+  # mapping and downloads still read the live filtered_data()/rows_all, so their
+  # behaviour is unchanged.
+  map_filtered_data = debounce(filtered_data, 300)
+
+
   selected_marker_idx = reactiveVal(NULL)
   selected_shape_idx = reactiveVal(NULL)
   selected_row = reactiveVal(NULL)
@@ -3172,7 +3183,7 @@ server = function(input, output, session) {
     render_start = proc.time()[["elapsed"]]
 
     if (is_hcp_mode()) {
-      data = filtered_data() %>%
+      data = map_filtered_data() %>%
         mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
       simplify_start = proc.time()[["elapsed"]]
       idx0 = match(data$geo_admin0, adm0_sel_disp$geo_admin0)
@@ -3244,7 +3255,7 @@ server = function(input, output, session) {
     legend_vals = pal_metric_obj$legend_vals
     single_value = pal_metric_obj$single_value
     single_colour = pal_metric_obj$single_colour
-    data = filtered_data() %>%
+    data = map_filtered_data() %>%
       mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
 
     SubsetG = SubsetG %>%
