@@ -838,7 +838,8 @@ build_simplified_layer = function(sf_layer, tol, cache_file, source_file) {
 }
 
 # Larger admin units can tolerate a coarser tolerance; ADM2 districts are small
-# so they get a finer one. ~0.03 deg ≈ 3 km.
+# so they get a finer one. ADM0 is the detailed world coastline, so it needs the
+# coarsest tolerance (0.1 deg ~ 11 km) to shrink its payload meaningfully.
 adm0_sel_disp = build_simplified_layer(adm0_sel, 0.1, "cache_adm0_disp.rds", "ADM0.gpkg")
 adm1_sel_disp = build_simplified_layer(adm1_sel, 0.02, "cache_adm1_disp.rds", "ADM1.gpkg")
 adm2_sel_disp = build_simplified_layer(adm2_sel, 0.01, "cache_adm2_disp.rds", "ADM2.gpkg")
