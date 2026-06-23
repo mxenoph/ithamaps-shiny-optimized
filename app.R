@@ -1820,28 +1820,38 @@ server = function(input, output, session) {
   selected_prediction_point = reactiveVal(NULL)
   export_status_text = reactiveVal("")
 
+  # Tracks the previous set of selected table rows (in original-data 1-based
+  # indices, matching input$data_table_rows_selected) so a manual click can be
+  # distinguished as an "add" vs "remove" and collapsed to a single row.
+  previous_selection = reactiveVal(integer(0))
+  # When TRUE, the next data_table_rows_selected change was triggered
+  # programmatically (shape/marker/clear/collapse) and must be accepted as-is
+  # without re-collapsing. The observer consumes (resets) the flag.
+  suppress_selection_observer = reactiveVal(FALSE)
+
   local_rows_from_table_rows = function(table_rows) {
     if (is.null(table_rows) || length(table_rows) == 0) {
       return(NULL)
     }
-    table_rows = as.integer(table_rows[[1]])
+    table_rows = as.integer(table_rows)
     rows_all = input$data_table_rows_all
     if (is.null(rows_all)) {
       return(table_rows)
     }
     local_row = match(table_rows, rows_all)
-    if (is.na(local_row)) NULL else as.integer(local_row)
+    local_row = as.integer(local_row[!is.na(local_row)])
+    if (length(local_row) == 0) NULL else local_row
   }
 
   table_rows_from_local_rows = function(local_rows) {
     if (is.null(local_rows) || length(local_rows) == 0) {
       return(integer(0))
     }
-    local_rows = as.integer(local_rows[[1]])
+    local_rows = as.integer(local_rows)
     rows_all = input$data_table_rows_all
     out = if (is.null(rows_all)) local_rows else rows_all[local_rows]
     out = as.integer(out[!is.na(out)])
-    if (length(out) == 0) integer(0) else out[[1]]
+    out
   }
 
   set_export_status = function(msg) {
@@ -1974,14 +1984,35 @@ server = function(input, output, session) {
             div(
               class = "row mt-2 pt-2",
               style = "border-top: 1px solid #dee2e6;",
-              div(
-                class = "col-12 text-muted",
-                "Circles show unique records. Numbered black circles indicate multiple records at that location. Click any marker for more details."
-              ),
-              div(
-                class = "col-12 text-muted mt-1",
-                "Table column filters update displayed records (table rows and black circles) only. Polygon colours and metric legends are not recomputed from table-filtered subsets."
-              )
+              if (is_hcp_mode()) {
+                tagList(
+                  div(
+                    class = "col-12 text-muted",
+                    paste(
+                      "Healthcare availability data are aggregated per country: when multiple reports exist for the same country,",
+                      "they are consolidated into a single entry for each availability status. Where reports give conflicting details,",
+                      "values are merged using fixed precedence rules (for example, broader eligibility such as \"Universal\" and stricter",
+                      "application such as \"Mandatory\" take precedence; diagnostic methods and source references are combined; and the",
+                      "implementation timeframe spans the earliest to the most recent reported years)."
+                    )
+                  ),
+                  div(
+                    class = "col-12 text-muted mt-1",
+                    "Click any country polygon for the consolidated healthcare policy details. Table column filters update the displayed records only."
+                  )
+                )
+              } else {
+                tagList(
+                  div(
+                    class = "col-12 text-muted",
+                    "Circles show unique records. Numbered black circles indicate multiple records at that location. Click any marker for more details."
+                  ),
+                  div(
+                    class = "col-12 text-muted mt-1",
+                    "Table column filters update displayed records (table rows and black circles) only. Polygon colours and metric legends are not recomputed from table-filtered subsets."
+                  )
+                )
+              }
             )
           )
         )
@@ -2213,48 +2244,91 @@ server = function(input, output, session) {
     curated_query_box_html()
   })
 
-  table_toggle_clear_callback = JS(
-    "table.on('user-select', function(e, dt, type, cell) {",
-    "  if (type !== 'row') { return; }",
-    "  var row = table.row(cell.index().row);",
-    "  var rowNode = row.node();",
-    "  if ($(rowNode).hasClass('selected')) {",
-    "    e.preventDefault();",
-    "    table.rows().deselect();",
-    "    Shiny.setInputValue('data_table_clear_selection_click', Date.now(), {priority: 'event'});",
-    "  }",
-    "});"
-  )
-
-  observeEvent(input$data_table_rows_selected, {
-    row_local = local_rows_from_table_rows(input$data_table_rows_selected)
-    selected_row(row_local)
-    if (is.null(row_local)) {
+  # Helper: apply a single-row selection (or clear) to all selection state and,
+  # if the on-screen DT selection differs, push it via the proxy with the
+  # suppression flag set so the resulting rows_selected event is accepted as-is.
+  apply_single_selection = function(table_row, current_selection) {
+    if (is.null(table_row) || length(table_row) == 0 || is.na(table_row[[1]])) {
+      previous_selection(integer(0))
+      selected_row(NULL)
       selected_marker_idx(NULL)
       selected_marker_layer_id(NULL)
       selected_shape_idx(NULL)
-    } else {
-      row_idx = as.integer(row_local[[1]])
-      selected_marker_idx(row_idx)
-      selected_marker_layer_id(paste0("row_", row_idx))
-      selected_shape_idx(NULL)
+      if (length(current_selection) > 0) {
+        suppress_selection_observer(TRUE)
+        dataTableProxy("data_table") %>% selectRows(NULL)
+      }
+      return(invisible(NULL))
     }
-  })
-
-  observeEvent(input$data_table_clear_selection_click, {
-    selected_row(NULL)
-    selected_marker_idx(NULL)
-    selected_marker_layer_id(NULL)
+    table_row = as.integer(table_row[[1]])
+    row_local = local_rows_from_table_rows(table_row)
+    if (is.null(row_local) || length(row_local) == 0) {
+      return(invisible(NULL))
+    }
+    row_idx = as.integer(row_local[[1]])
+    previous_selection(table_row)
+    selected_row(row_idx)
+    selected_marker_idx(row_idx)
+    selected_marker_layer_id(paste0("row_", row_idx))
     selected_shape_idx(NULL)
-    dataTableProxy("data_table") %>%
-      selectRows(NULL)
-  })
+    same = length(current_selection) == 1 && current_selection[[1]] == table_row
+    if (!same) {
+      suppress_selection_observer(TRUE)
+      proxy = dataTableProxy("data_table")
+      page_length = 10L
+      target_page = ((table_row - 1L) %/% page_length) + 1L
+      proxy %>% selectPage(target_page)
+      proxy %>% selectRows(table_row)
+    }
+  }
+
+  # The table uses "multiple" selection so a map shape click can natively
+  # highlight many rows. Manual interaction, however, must behave as single
+  # selection: clicking a row selects only it, and clicking the sole selected
+  # row clears it. DT's default selection does not emit the Select extension's
+  # "user-select" event, so this is handled entirely server-side here by diffing
+  # the new selection against the previous one.
+  observeEvent(input$data_table_rows_selected, {
+    new_sel = as.integer(input$data_table_rows_selected %||% integer(0))
+    new_sel = new_sel[!is.na(new_sel)]
+
+    # Programmatic change (shape/marker/clear/collapse): accept as-is and sync.
+    if (isTRUE(suppress_selection_observer())) {
+      suppress_selection_observer(FALSE)
+      previous_selection(new_sel)
+      selected_row(local_rows_from_table_rows(new_sel))
+      return(invisible(NULL))
+    }
+
+    prev = as.integer(previous_selection())
+    prev = prev[!is.na(prev)]
+    added = setdiff(new_sel, prev)
+    removed = setdiff(prev, new_sel)
+
+    if (length(added) >= 1) {
+      # User clicked an unselected row: keep only the newly clicked one.
+      apply_single_selection(added[[length(added)]], new_sel)
+    } else if (length(removed) >= 1) {
+      if (length(prev) <= 1) {
+        # Toggled off the sole selected row: clear everything.
+        apply_single_selection(NULL, new_sel)
+      } else {
+        # Clicked one member of a multi-row (shape) selection: focus just it.
+        apply_single_selection(removed[[1]], new_sel)
+      }
+    } else {
+      apply_single_selection(NULL, new_sel)
+    }
+  }, ignoreNULL = FALSE)
 
   observeEvent(filtered_data(),
     {
       selected_marker_idx(NULL)
       selected_marker_layer_id(NULL)
       selected_shape_idx(NULL)
+      selected_row(NULL)
+      previous_selection(integer(0))
+      suppress_selection_observer(FALSE)
     },
     ignoreInit = TRUE
   )
@@ -2266,6 +2340,66 @@ server = function(input, output, session) {
       mapId = "map",
       layerId = selected_marker_layer_id()
     ))
+  })
+
+  # Healthcare availability renders country polygons, so the selected row is
+  # highlighted with a blue polygon overlay drawn on top via leafletProxy.
+  # Guard on input$map_bounds so the proxy only runs after the map exists.
+  observe({
+    req(!is_prediction_mode())
+    req(is_hcp_mode())
+    req(!is.null(input$map_bounds))
+    proxy = leafletProxy("map")
+    proxy %>% clearGroup("highlight")
+    row_local = selected_row()
+    if (!is.null(row_local) && length(row_local) > 0) {
+      row_idx = as.integer(row_local[[1]])
+      data = filtered_data()
+      if (!is.na(row_idx) && row_idx >= 1L && row_idx <= nrow(data)) {
+        idx0 = match(data$geo_admin0[row_idx], adm0_sel$geo_admin0)
+        if (!is.na(idx0)) {
+          sel_sf = st_as_sf(
+            data[row_idx, , drop = FALSE] %>%
+              mutate(geom = st_geometry(adm0_sel)[idx0]),
+            sf_column_name = "geom"
+          )
+          proxy %>%
+            addPolygons(
+              data = sel_sf,
+              color = "#0000CC",
+              fillColor = "#0000CC",
+              weight = 2,
+              fillOpacity = 1,
+              group = "highlight"
+            )
+        }
+      }
+    }
+  })
+
+  # Non-HCP modes render aggregated polygons; a clicked map shape is highlighted
+  # with a blue overlay drawn on top via leafletProxy (group "shape_highlight").
+  observe({
+    req(!is_prediction_mode())
+    req(!is_hcp_mode())
+    req(!is.null(input$map_bounds))
+    proxy = leafletProxy("map")
+    proxy %>% clearGroup("shape_highlight")
+    shp_idx = selected_shape_idx()
+    if (!is.null(shp_idx) && length(shp_idx) == 1 && !is.na(shp_idx)) {
+      SubsetG = SubsetG_r()
+      if (!is.null(SubsetG) && shp_idx >= 1L && shp_idx <= nrow(SubsetG)) {
+        proxy %>%
+          addPolygons(
+            data = SubsetG[shp_idx, , drop = FALSE],
+            color = "#0000CC",
+            fillColor = "#0000CC",
+            weight = 2,
+            fillOpacity = 0.5,
+            group = "shape_highlight"
+          )
+      }
+    }
   })
 
   popup_contentA_r = reactive({
@@ -2866,33 +3000,64 @@ server = function(input, output, session) {
     render_start = proc.time()[["elapsed"]]
 
     if (is_hcp_mode()) {
-      data = SubsetHCP_r() %>%
+      data = filtered_data() %>%
         mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
+      idx0 = match(data$geo_admin0, adm0_sel$geo_admin0)
+      data = data %>%
+        mutate(
+          Country = adm0_lookup$Region[idx0],
+          geom = st_geometry(adm0_sel)[idx0]
+        )
+      hcp_sf = st_as_sf(data, sf_column_name = "geom")
+      hcp_sf = hcp_sf[!is.na(idx0), , drop = FALSE]
+      hcp_sf = hcp_sf %>%
+        mutate(
+          hover_label = paste0(
+            "<strong>", Country, "</strong><br>Healthcare availability: ", Availability
+          )
+        )
+
+      availability_levels = c(
+        "Available (Nationally)",
+        "Available (Regionally)",
+        "Unavailable"
+      )
+      hcp_palette = viridis::viridis(3, option = "F", begin = 0, end = 0.7, direction = -1)
+      pal_hcp = colorFactor(palette = hcp_palette, domain = availability_levels, na.color = "#cccccc")
+
       map_widget = leaflet(options = default_leaflet_options) %>%
         addProviderTiles("CartoDB.Positron") %>%
         addScaleBar(position = "bottomleft") %>%
-        addCircleMarkers(
-          data = data,
-          lat = ~ as.numeric(latitude),
-          lng = ~ as.numeric(longitude),
+        addPolygons(
+          data = hcp_sf,
           layerId = ~ marker_layer_id,
-          stroke = TRUE,
-          color = "white",
-          weight = 1,
-          fillColor = "steelblue",
-          fillOpacity = 1,
-          radius = 7,
-          clusterOptions = markerClusterOptions(
-            spiderfyDistanceMultiplier = 1,
-            animate = TRUE,
-            animateAddingMarkers = TRUE,
-            spiderfyOnMaxZoom = TRUE,
-            zoomToBoundsOnClick = TRUE,
-            showCoverageOnHover = TRUE,
-            maxClusterRadius = 4
-          )
+          weight = 0.3,
+          opacity = 1,
+          color = "black",
+          fillOpacity = map_fill_opacity,
+          smoothFactor = 0.5,
+          highlightOptions = highlightOptions(
+            weight = 1.4,
+            color = "#0000CC",
+            fillOpacity = 0.5,
+            fillColor = "#0000CC",
+            bringToFront = FALSE
+          ),
+          label = ~ lapply(hover_label, HTML),
+          labelOptions = labelOptions(
+            direction = "auto",
+            textsize = "12px",
+            style = list("padding" = "4px 6px")
+          ),
+          fillColor = ~ pal_hcp(Availability)
         ) %>%
-        htmlwidgets::onRender(cluster_hover_js("steelblue", "steelblue"))
+        addLegend(
+          pal = pal_hcp,
+          values = availability_levels,
+          title = "Healthcare availability",
+          opacity = map_fill_opacity,
+          position = "bottomright"
+        )
       perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(map_widget)
     }
@@ -2909,6 +3074,7 @@ server = function(input, output, session) {
 
     SubsetG = SubsetG %>%
       mutate(
+        shape_layer_id = paste0("shape_", dplyr::row_number()),
         hover_region = dplyr::case_when(
           !is.na(Region2) & Region2 != "" & Region2 != "Not applicable" ~ Region2,
           !is.na(Region1) & Region1 != "" & Region1 != "Not applicable" ~ Region1,
@@ -2951,6 +3117,7 @@ server = function(input, output, session) {
       ) %>%
       addPolygons(
         data = SubsetG,
+        layerId = ~ shape_layer_id,
         weight = 0.3,
         opacity = 1,
         color = "black",
@@ -3111,7 +3278,7 @@ server = function(input, output, session) {
           "Source" = "citation_str"
         )))
       table_widget = datatable(df,
-        selection = "single",
+        selection = "multiple",
         filter = "top",
         options = list(
           pageLength = 10,
@@ -3121,7 +3288,6 @@ server = function(input, output, session) {
           rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
           columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
         ),
-        callback = table_toggle_clear_callback,
         class = "stripe hover cell-border"
       )
       perf_state$table_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
@@ -3163,7 +3329,7 @@ server = function(input, output, session) {
         "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source"
       )
     table_widget = datatable(df,
-      selection = "single",
+      selection = "multiple",
       filter = "top",
       options = list(
         pageLength = 10,
@@ -3173,7 +3339,6 @@ server = function(input, output, session) {
         rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
         columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
       ),
-      callback = table_toggle_clear_callback,
       class = "stripe hover cell-border"
     )
     perf_state$table_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
@@ -3759,9 +3924,11 @@ server = function(input, output, session) {
       selected_shape_idx(NULL)
 
       table_rows = table_rows_from_local_rows(nearest_idx)
+      previous_selection(table_rows)
       if (length(table_rows) > 0) {
         page_length = 10L
         target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
+        suppress_selection_observer(TRUE)
         proxy = dataTableProxy("data_table")
         proxy %>% selectPage(target_page)
         proxy %>% selectRows(table_rows)
@@ -3773,14 +3940,70 @@ server = function(input, output, session) {
     req(!is_prediction_mode())
     req(data_available())
     if (is_hcp_mode()) {
+      click = input$map_shape_click
+      click_id = click$id %||% NULL
+      if (is.null(click_id)) {
+        return(invisible(NULL))
+      }
+      click_id_chr = as.character(click_id)
+      if (!grepl("^row_[0-9]+$", click_id_chr)) {
+        return(invisible(NULL))
+      }
+      idx = suppressWarnings(as.integer(sub("^row_", "", click_id_chr)))
+      data = filtered_data()
+      if (is.na(idx) || idx < 1L || idx > nrow(data)) {
+        return(invisible(NULL))
+      }
+      # Healthcare polygons are drawn per row but a country may have several
+      # rows (one per Availability status); select every row for that country.
+      selected_rows = idx
+      if ("geo_admin0" %in% names(data) && !is.na(data$geo_admin0[[idx]])) {
+        selected_rows = which(data$geo_admin0 == data$geo_admin0[[idx]])
+      }
+      selected_row(selected_rows)
+      selected_marker_idx(idx)
+      selected_marker_layer_id(NULL)
+      selected_shape_idx(NULL)
+      table_rows = table_rows_from_local_rows(selected_rows)
+      previous_selection(table_rows)
+      if (length(table_rows) > 0) {
+        page_length = 10L
+        target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
+        suppress_selection_observer(TRUE)
+        proxy = dataTableProxy("data_table")
+        proxy %>% selectPage(target_page)
+        proxy %>% selectRows(table_rows)
+      }
       return(invisible(NULL))
     }
     click = input$map_shape_click
     SubsetG = SubsetG_r()
     if (!is.null(click) && !is.null(SubsetG)) {
-      clicked_shape = st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
-      dists = st_distance(clicked_shape, st_centroid(SubsetG))
-      nearest_idx = which.min(dists)
+      # Prefer the polygon's layerId so the clicked shape is identified exactly
+      # (nearest-centroid misfires for large/elongated countries). Fall back to
+      # nearest centroid only when no usable id is present.
+      nearest_idx = NA_integer_
+      click_id = click$id %||% NULL
+      if (!is.null(click_id)) {
+        click_id_chr = as.character(click_id)
+        if (grepl("^shape_[0-9]+$", click_id_chr)) {
+          parsed = suppressWarnings(as.integer(sub("^shape_", "", click_id_chr)))
+          if (!is.na(parsed) && parsed >= 1L && parsed <= nrow(SubsetG)) {
+            nearest_idx = parsed
+          }
+        }
+      }
+      if (is.na(nearest_idx)) {
+        clicked_shape = st_sfc(st_point(c(click$lng, click$lat)), crs = st_crs(SubsetG))
+        hits = suppressMessages(st_intersects(clicked_shape, SubsetG))
+        hit_idx = if (length(hits) >= 1) hits[[1]] else integer(0)
+        if (length(hit_idx) >= 1) {
+          nearest_idx = as.integer(hit_idx[[1]])
+        } else {
+          dists = st_distance(clicked_shape, st_centroid(SubsetG))
+          nearest_idx = which.min(dists)
+        }
+      }
 
       data = filtered_data()
       selected_rows = integer(0)
@@ -3794,21 +4017,30 @@ server = function(input, output, session) {
         selected_rows = which(data$geo_admin0 == selected_shape$geo_admin0[[1]])
       }
 
-      if (length(selected_rows) > 0) {
-        selected_row(selected_rows[[1]])
-        table_rows = table_rows_from_local_rows(selected_rows[[1]])
-        if (length(table_rows) > 0) {
-          page_length = 10L
-          target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
-          proxy = dataTableProxy("data_table")
-          proxy %>% selectPage(target_page)
-          proxy %>% selectRows(table_rows)
-        }
-      }
-
+      # Set shape/marker state first so the programmatic selectRows() below does
+      # not get treated as a manual single-row click.
       selected_shape_idx(nearest_idx)
       selected_marker_idx(NULL)
       selected_marker_layer_id(NULL)
+
+      proxy = dataTableProxy("data_table")
+      if (length(selected_rows) > 0) {
+        selected_row(selected_rows)
+        table_rows = table_rows_from_local_rows(selected_rows)
+        previous_selection(table_rows)
+        if (length(table_rows) > 0) {
+          page_length = 10L
+          target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
+          suppress_selection_observer(TRUE)
+          proxy %>% selectPage(target_page)
+          proxy %>% selectRows(table_rows)
+        }
+      } else {
+        selected_row(NULL)
+        previous_selection(integer(0))
+        suppress_selection_observer(TRUE)
+        proxy %>% selectRows(NULL)
+      }
     }
   })
 
@@ -3817,6 +4049,8 @@ server = function(input, output, session) {
     selected_marker_idx(NULL)
     selected_marker_layer_id(NULL)
     selected_shape_idx(NULL)
+    previous_selection(integer(0))
+    suppress_selection_observer(TRUE)
     dataTableProxy("data_table") %>%
       selectRows(NULL)
   })
