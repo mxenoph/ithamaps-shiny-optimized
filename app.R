@@ -767,6 +767,110 @@ adm0_lookup = adm0_sel %>% st_drop_geometry()
 adm1_lookup = adm1_sel %>% st_drop_geometry()
 adm2_lookup = adm2_sel %>% st_drop_geometry()
 
+# ---------------------------------------------------------------------------
+# Pre-simplified display geometry (performance).
+# The ADM0/1/2 boundaries are full resolution (gpkg are 0.5-1 GB), so a global
+# query selecting many polygons produces very large GeoJSON that dominates
+# websocket transfer + client-side render and can crash the browser. The vertex
+# detail is invisible at choropleth zoom.
+#
+# (a) Aggressive fixed tolerances (in degrees) reduce vertex counts massively.
+# (b) The simplification is done ONCE at startup and persisted to .rds, so it is
+#     never recomputed per render (and restarts skip the work entirely). The
+#     render path swaps the cached simplified geometry in by key, which is a
+#     cheap match() + geometry assignment.
+# Row order and attributes are preserved so layerIds / selection indices stay
+# aligned with the unsimplified SubsetG (which is kept full-resolution for
+# shape-click matching and PNG export fidelity).
+# ---------------------------------------------------------------------------
+build_simplified_layer = function(sf_layer, tol, cache_file, source_file) {
+  layer_geom_mb = function(x) round(as.numeric(object.size(sf::st_geometry(x))) / 1024^2, 1)
+  if (file.exists(cache_file) && file.exists(source_file) &&
+      file.info(cache_file)$mtime >= file.info(source_file)$mtime) {
+    cached = tryCatch(readRDS(cache_file), error = function(e) NULL)
+    if (!is.null(cached) && nrow(cached) == nrow(sf_layer)) {
+      message(sprintf("[ithamaps] simplify %s: cache hit (%s, %.1f MB geom)",
+                      cache_file, nrow(cached), layer_geom_mb(cached)))
+      return(cached)
+    }
+  }
+  before_mb = layer_geom_mb(sf_layer)
+  t0 = proc.time()[["elapsed"]]
+  # Use planar GEOS (not s2) for simplification: s2 rejects self-intersecting
+  # loops ("Loop N is not valid: Edge ... crosses edge ..."), which are common
+  # in coarse admin boundaries; GEOS simplifies/repairs them fine for display.
+  old_s2 = sf::sf_use_s2()
+  suppressMessages(sf::sf_use_s2(FALSE))
+  on.exit(suppressMessages(sf::sf_use_s2(old_s2)), add = TRUE)
+  simplify_once = function(layer) {
+    suppressWarnings(sf::st_simplify(layer, dTolerance = tol, preserveTopology = TRUE))
+  }
+  simplified = tryCatch(
+    simplify_once(sf_layer),
+    error = function(e) {
+      message(sprintf("[ithamaps] simplify %s: st_simplify error: %s; retrying after st_make_valid",
+                      cache_file, conditionMessage(e)))
+      tryCatch({
+        valid_layer = sf::st_make_valid(sf_layer)
+        simplify_once(valid_layer)
+      }, error = function(e2) {
+        message(sprintf("[ithamaps] simplify %s: retry failed: %s", cache_file, conditionMessage(e2)))
+        NULL
+      })
+    }
+  )
+  if (is.null(simplified)) {
+    message(sprintf("[ithamaps] simplify %s: FAILED, using full-resolution geometry (%.1f MB)",
+                    cache_file, before_mb))
+    return(sf_layer)
+  }
+  # preserveTopology should prevent empties, but guard: restore the original
+  # geometry for any feature that simplified away to empty.
+  empty = sf::st_is_empty(sf::st_geometry(simplified))
+  if (any(empty)) {
+    sf::st_geometry(simplified)[empty] = sf::st_geometry(sf_layer)[empty]
+  }
+  tryCatch(saveRDS(simplified, cache_file), error = function(e) NULL)
+  message(sprintf("[ithamaps] simplify %s: %.1f -> %.1f MB geom (tol=%g) in %.1fs, cached",
+                  cache_file, before_mb, layer_geom_mb(simplified), tol,
+                  proc.time()[["elapsed"]] - t0))
+  simplified
+}
+
+# Larger admin units can tolerate a coarser tolerance; ADM2 districts are small
+# so they get a finer one. ~0.03 deg ≈ 3 km.
+adm0_sel_disp = build_simplified_layer(adm0_sel, 0.1, "cache_adm0_disp.rds", "ADM0.gpkg")
+adm1_sel_disp = build_simplified_layer(adm1_sel, 0.02, "cache_adm1_disp.rds", "ADM1.gpkg")
+adm2_sel_disp = build_simplified_layer(adm2_sel, 0.01, "cache_adm2_disp.rds", "ADM2.gpkg")
+
+# attach_display_geometry(): replace an sf object's geometry with the cached,
+# pre-simplified geometry, matched by the finest available admin key. Cheap
+# (no simplification at render time). Falls back to the original geometry for
+# any unmatched feature.
+attach_display_geometry = function(sf_obj) {
+  if (is.null(sf_obj) || nrow(sf_obj) == 0) {
+    return(sf_obj)
+  }
+  cols = names(sf_obj)
+  if ("geo_admin2" %in% cols && any(!is.na(sf_obj$geo_admin2))) {
+    idx = match(sf_obj$geo_admin2, adm2_sel_disp$geo_admin2)
+    src = sf::st_geometry(adm2_sel_disp)
+  } else if ("geo_admin1" %in% cols && any(!is.na(sf_obj$geo_admin1))) {
+    idx = match(sf_obj$geo_admin1, adm1_sel_disp$geo_admin1)
+    src = sf::st_geometry(adm1_sel_disp)
+  } else {
+    idx = match(sf_obj$geo_admin0, adm0_sel_disp$geo_admin0)
+    src = sf::st_geometry(adm0_sel_disp)
+  }
+  new_geom = sf::st_geometry(sf_obj)
+  ok = !is.na(idx)
+  if (any(ok)) {
+    new_geom[ok] = src[idx[ok]]
+    sf::st_geometry(sf_obj) = new_geom
+  }
+  sf_obj
+}
+
 # Ported from IthaMaps-shinyapp/app.R lines 418-426: load prediction rasters,
 # priority sites, and admin lookups once so prediction mode can reuse them.
 load_prediction_assets = function() {
@@ -1635,6 +1739,32 @@ ui = fluidPage(
       // before the iframe height change triggers a map.getBounds() call.
       setTimeout(schedulePostHeight, 800);
       setTimeout(schedulePostHeight, 2000);
+    })();")),
+    tags$script(HTML("(function() {
+      function loaderEl() { return document.getElementById('ithamaps_map_loader'); }
+      function showLoader() {
+        var el = loaderEl();
+        if (el) { el.classList.add('is-loading'); }
+        window.__ithamapsMapRecalcStart = (window.performance && performance.now) ? performance.now() : Date.now();
+      }
+      function hideLoader() {
+        var el = loaderEl();
+        if (el) { el.classList.remove('is-loading'); }
+      }
+      // The map output container has id 'map'. Show the progress bar while the
+      // output is recalculating (covers server compute) and record a browser
+      // timestamp; the leaflet onRender callback hides it once the map has
+      // actually been drawn (covers transfer + client-side render).
+      $(document).on('shiny:recalculating', function(e) {
+        if (e && ((e.target && e.target.id === 'map') || e.name === 'map')) { showLoader(); }
+      });
+      $(document).on('shiny:error', function(e) {
+        if (e && ((e.target && e.target.id === 'map') || e.name === 'map')) { hideLoader(); }
+      });
+      // Fallback in case onRender never runs (e.g. an empty map).
+      $(document).on('shiny:value', function(e) {
+        if (e && ((e.target && e.target.id === 'map') || e.name === 'map')) { setTimeout(hideLoader, 2000); }
+      });
     })();"))
   ),
   tags$style(HTML(".dataTables_wrapper .dataTables_filter,
@@ -1660,6 +1790,12 @@ ui = fluidPage(
                                  .map-title {font-size: 1rem; font-weight: 600; text-align: center; margin-bottom: 0.5rem;}
                                  .map-card {border: 1px solid #ccc; border-radius: 0.4rem; box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075); padding: 0.75rem; background-color: white;}
                                  .leaflet-container {background: #f8f9fa;}
+                                 .ithamaps-map-loader {position: absolute; inset: 0; z-index: 1200; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(255,255,255,0.85); gap: 0.75rem; pointer-events: none;}
+                                 .ithamaps-map-loader.is-loading {display: flex;}
+                                 .ithamaps-map-loader-caption {font-size: 0.9rem; color: #333; font-weight: 600;}
+                                 .ithamaps-progress {width: 60%; max-width: 360px; height: 8px; background: #e3e3e3; border-radius: 4px; overflow: hidden;}
+                                 .ithamaps-progress-bar {width: 40%; height: 100%; background: #0000CC; border-radius: 4px; animation: ithamaps-indeterminate 1.1s ease-in-out infinite;}
+                                 @keyframes ithamaps-indeterminate {0% {margin-left: -40%;} 100% {margin-left: 100%;}}
                                  .info-card {border: 1px solid #ccc; border-radius: 0.4rem; box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075); padding: 0.75rem; background-color: #f8f9fa; font-size: 0.85rem;}
                                  .value-table {width: 100%; border-collapse: collapse;}
                                  .value-table td {border: 1px solid #ddd; padding: 4px 6px;}
@@ -1677,6 +1813,8 @@ ui = fluidPage(
 server = function(input, output, session) {
   perf_state = reactiveValues(
     map_render_secs = NULL,
+    map_client_total_secs = NULL,
+    map_simplify_secs = NULL,
     table_render_secs = NULL,
     png_prep_cache_hit = NULL,
     png_prep_workers = NULL,
@@ -1690,6 +1828,15 @@ server = function(input, output, session) {
   trace_env = new.env(parent = emptyenv())
   trace_env$bundle_builds = 0L
   trace_env$last_qs = NA_character_
+
+  # Browser-reported total wall-clock for the main map (server compute +
+  # serialization + websocket transfer + client-side leaflet render).
+  observeEvent(input$map_client_total_ms, {
+    ms = suppressWarnings(as.numeric(input$map_client_total_ms))
+    if (!is.na(ms)) {
+      perf_state$map_client_total_secs = round(ms / 1000, 3)
+    }
+  })
 
   log_trace = function(event, details = "") {
     sid = substr(session$token %||% "unknown", 1, 8)
@@ -2024,8 +2171,14 @@ server = function(input, output, session) {
           uiOutput("custom_popup")
         ),
         div(
-          style = "flex-grow: 1;",
-          withSpinner(leafletOutput("map", height = "500px"), type = 3, color = "#0000CC", color.background = "white", caption = "Retrieving requested data. This may take a moment.")
+          style = "flex-grow: 1; position: relative;",
+          div(
+            id = "ithamaps_map_loader",
+            class = "ithamaps-map-loader is-loading",
+            div(class = "ithamaps-map-loader-caption", "Retrieving requested data. This may take a moment."),
+            div(class = "ithamaps-progress", div(class = "ithamaps-progress-bar"))
+          ),
+          leafletOutput("map", height = "500px")
         )
       ),
       div(
@@ -2720,6 +2873,24 @@ server = function(input, output, session) {
     )
   }
 
+  # Runs in the browser after the leaflet map is actually drawn: hides the
+  # progress bar and reports the browser-observed total (server compute +
+  # serialization + websocket transfer + client render) back to the server so
+  # the timing panel can show the real wall-clock the user waits for.
+  map_ready_js = "function(el, x) {
+    try {
+      var loader = document.getElementById('ithamaps_map_loader');
+      if (loader) { loader.classList.remove('is-loading'); }
+      if (window.__ithamapsMapRecalcStart) {
+        var now = (window.performance && performance.now) ? performance.now() : Date.now();
+        var ms = Math.round(now - window.__ithamapsMapRecalcStart);
+        window.__ithamapsMapRecalcStart = null;
+        if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
+          Shiny.setInputValue('map_client_total_ms', ms, {priority: 'event'});
+        }
+      }
+    } catch (e) {}
+  }"
   # Shared prediction-map options prevent extreme zoom-out tile requests that can
   # render broken-image placeholders near the map edge while keeping sync behaviour.
   prediction_leaflet_options = leafletOptions(
@@ -3002,14 +3173,16 @@ server = function(input, output, session) {
     if (is_hcp_mode()) {
       data = filtered_data() %>%
         mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
-      idx0 = match(data$geo_admin0, adm0_sel$geo_admin0)
+      simplify_start = proc.time()[["elapsed"]]
+      idx0 = match(data$geo_admin0, adm0_sel_disp$geo_admin0)
       data = data %>%
         mutate(
           Country = adm0_lookup$Region[idx0],
-          geom = st_geometry(adm0_sel)[idx0]
+          geom = st_geometry(adm0_sel_disp)[idx0]
         )
       hcp_sf = st_as_sf(data, sf_column_name = "geom")
       hcp_sf = hcp_sf[!is.na(idx0), , drop = FALSE]
+      perf_state$map_simplify_secs = round(proc.time()[["elapsed"]] - simplify_start, 3)
       hcp_sf = hcp_sf %>%
         mutate(
           hover_label = paste0(
@@ -3057,7 +3230,8 @@ server = function(input, output, session) {
           title = "Healthcare availability",
           opacity = map_fill_opacity,
           position = "bottomright"
-        )
+        ) %>%
+        htmlwidgets::onRender(map_ready_js)
       perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(map_widget)
     }
@@ -3091,6 +3265,10 @@ server = function(input, output, session) {
         )
       )
 
+    simplify_start = proc.time()[["elapsed"]]
+    SubsetG_display = attach_display_geometry(SubsetG)
+    perf_state$map_simplify_secs = round(proc.time()[["elapsed"]] - simplify_start, 3)
+
     map_widget = leaflet(data, options = default_leaflet_options) %>%
       addProviderTiles("CartoDB.Positron") %>%
       addScaleBar(position = "bottomleft") %>%
@@ -3116,7 +3294,7 @@ server = function(input, output, session) {
         )
       ) %>%
       addPolygons(
-        data = SubsetG,
+        data = SubsetG_display,
         layerId = ~ shape_layer_id,
         weight = 0.3,
         opacity = 1,
@@ -3160,9 +3338,17 @@ server = function(input, output, session) {
     }
 
     map_widget = map_widget %>%
-      htmlwidgets::onRender(cluster_hover_js("black", "white"))
+      htmlwidgets::onRender(cluster_hover_js("black", "white")) %>%
+      htmlwidgets::onRender(map_ready_js)
 
     perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
+    message(sprintf(
+      paste0("[ithamaps] map render | polygons=%d markers=%d geom=%.1fMB ",
+             "geometry_prep=%.3fs render_build=%.3fs"),
+      nrow(SubsetG_display), nrow(data),
+      round(as.numeric(object.size(sf::st_geometry(SubsetG_display))) / 1024^2, 1),
+      perf_state$map_simplify_secs, perf_state$map_render_secs
+    ))
     map_widget
   })
 
@@ -4129,6 +4315,8 @@ server = function(input, output, session) {
       "Polygon subset" = if (!is.null(timings$polygon_subset)) sprintf("%.3fs", timings$polygon_subset) else NA_character_,
       "Query bundle total" = if (!is.null(timings$total_query_bundle)) sprintf("%.3fs", timings$total_query_bundle) else NA_character_,
       "Map render" = if (!is.null(perf_state$map_render_secs)) sprintf("%.3fs", perf_state$map_render_secs) else NA_character_,
+      "Map geometry prep" = if (!is.null(perf_state$map_simplify_secs)) sprintf("%.3fs", perf_state$map_simplify_secs) else NA_character_,
+      "Map total (browser, incl. transfer+render)" = if (!is.null(perf_state$map_client_total_secs)) sprintf("%.3fs", perf_state$map_client_total_secs) else NA_character_,
       "Table render" = if (!is.null(perf_state$table_render_secs)) sprintf("%.3fs", perf_state$table_render_secs) else NA_character_,
       "PNG prep cache hit" = if (!is.null(perf_state$png_prep_cache_hit)) perf_state$png_prep_cache_hit else NA_character_,
       "PNG prep workers" = if (!is.null(perf_state$png_prep_workers)) as.character(perf_state$png_prep_workers) else NA_character_,
