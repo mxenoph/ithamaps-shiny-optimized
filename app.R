@@ -289,7 +289,10 @@ db_ithamaps_entries = db_ithamaps_entries %>%
   left_join(db_regions, by = "regions_id") %>%
   left_join(db_measure, by = "measure_id") %>%
   left_join(db_cause, by = "cause_id") %>%
-  left_join(db_metric, by = "metric_id") %>%
+  # metric_id is a FK into the `metric` table, which records the UNIT the value
+  # is stored in (e.g. percent, per 100000). Rename it to `metric_unit` so it is
+  # never confused with the Joomla "Metric" summary-statistic parameter/column.
+  left_join(db_metric %>% rename(metric_unit = metric_name), by = "metric_id") %>%
   left_join(db_ithamaps_cohort %>%
     rename(
       "cohort_id" = cid,
@@ -353,6 +356,9 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     filter(!is.na(phenotype)) %>%
     select(-count) %>%
     distinct(), by = "ithaID") %>%
+  # Keep the original metric FK for diagnostics (distinct from the Joomla
+  # "Metric" summary-statistic parameter).
+  mutate(metric_fk_id = metric_id) %>%
   select(
     -phen_id, -regions_id, -metric_id, -cause_id, -measure_id,
     -primary_ontology, -secondary_ontology, -cohort_id, -cohort_name,
@@ -570,53 +576,51 @@ Country = data.frame(
   Option = db_country$countryName
 )
 
+# ---------------------------------------------------------------------------
+# Allowed Measure / Cause options and their permitted combinations are derived
+# from the data itself rather than from hard-coded label lists: curated measures
+# and their causes come from ithamaps_entries, and the synthetic "Healthcare
+# availability" measure (id 21) takes its causes from hcp_per_region. A measure
+# is offered only if it occurs in the data, and a (measure, cause) pair is
+# accepted only if that exact pair occurs in the data.
+# ---------------------------------------------------------------------------
+measure_cause_allowed = db_ithamaps_entries %>%
+  dplyr::distinct(measure_name, cause_name) %>%
+  dplyr::filter(!is.na(measure_name), !is.na(cause_name)) %>%
+  dplyr::bind_rows(
+    db_hcp_per_region %>%
+      dplyr::distinct(cause_name) %>%
+      dplyr::filter(!is.na(cause_name)) %>%
+      dplyr::mutate(measure_name = "Healthcare availability") %>%
+      dplyr::select(measure_name, cause_name)
+  ) %>%
+  dplyr::distinct()
+
+# Measures present in the curated data (independent of cause, so allele-frequency
+# measures that carry no cause are still offered).
+measures_in_data = db_ithamaps_entries %>%
+  dplyr::distinct(measure_name) %>%
+  dplyr::filter(!is.na(measure_name)) %>%
+  dplyr::pull(measure_name)
+
 Measure = data.frame(
   ID = db_measure$measure_id,
-  Option = db_measure$measure_name
+  Option = db_measure$measure_name,
+  stringsAsFactors = FALSE
 ) %>%
-  filter(Option %in% c(
-    "Prevalence", "Carrier prevalence",
-    "Incidence", "Allele frequency", "Prenatal prevalence",
-    "Prenatal carrier prevalence", "Relative allele frequency",
-    "Preimplantation carrier prevalence", "Preimplantation prevalence"
-  )) %>%
+  filter(Option %in% measures_in_data) %>%
   rbind(data.frame(
     ID = 21,
-    Option = "Healthcare availability"
+    Option = "Healthcare availability",
+    stringsAsFactors = FALSE
   ))
-
-cause_labels_healthcare = c("Thalassaemia", "Hemoglobinopathy", "Sickle Cell Disease")
-cause_labels_phenotype = c(
-    "Beta Thalassaemia", "Alpha Thalassaemia", "Sickle Cell Disease", "Hemoglobin E Disease",
-    "Hemoglobin C Disease", "Thalassaemia", "Delta Thalassaemia", "Sickle Cell Disease-SC",
-    "Sickle Cell Disease-SE", "Sickle Beta Thalassaemia", "Hemoglobin C/Beta Thalassaemia Disease",
-    "Hemoglobin E/Beta Thalassaemia Disease", "Delta Beta Thalassaemia", "Thalassaemia Intermedia",
-    "Thalassaemia Major", "Hemoglobin H Disease", "Hydrops Fetalis", "Hemoglobin Barts", "Sickle Cell Disease-SS"
-)
-cause_labels_carrier = c(
-    "Beta Thalassaemia", "Alpha Thalassaemia", "Sickle Cell Disease", "Hemoglobin E Disease",
-    "Hemoglobin C Disease", "Thalassaemia", "Delta Thalassaemia", "Sickle Cell Disease-SS"
-)
 
 Cause = data.frame(
   ID = db_cause$cause_id,
-  Option = db_cause$cause_name
+  Option = db_cause$cause_name,
+  stringsAsFactors = FALSE
 ) %>%
-  filter(Option %in% unique(c(
-    cause_labels_healthcare,
-    cause_labels_carrier,
-    cause_labels_phenotype
-  )))
-
-cause_ids_healthcare = Cause %>%
-  filter(Option %in% cause_labels_healthcare) %>%
-  pull(ID)
-cause_ids_carrier = Cause %>%
-  filter(Option %in% cause_labels_carrier) %>%
-  pull(ID)
-cause_ids_phenotype = Cause %>%
-  filter(Option %in% cause_labels_phenotype) %>%
-  pull(ID)
+  filter(Option %in% unique(measure_cause_allowed$cause_name))
 
 measure_mode = function(measure_label) {
   if (is.null(measure_label) || length(measure_label) == 0 || is.na(measure_label[[1]])) {
@@ -651,35 +655,35 @@ validate_measure_cause_combination = function(measure_id, cause_id, measure_labe
     return(errors)
   }
 
-  allowed_lookup = switch(mode,
-    healthcare = cause_ids_healthcare,
-    carrier = cause_ids_carrier,
-    phenotype = cause_ids_phenotype,
-    allele_frequency = integer(),
-    relative_allele_frequency = integer(),
-    integer()
-  )
+  # Allele-frequency measures do not use a cause at all, so any supplied cause
+  # is invalid regardless of what occurs in the data.
+  if (mode %in% c("allele_frequency", "relative_allele_frequency")) {
+    return(unique(c(
+      errors,
+      sprintf(
+        "Cause '%s' is not allowed when Measure is '%s'.",
+        as.character(cause_label %||% cause_id),
+        as.character(measure_label %||% measure_id)
+      )
+    )))
+  }
 
-  if (!(cause_id %in% allowed_lookup)) {
-    if (mode %in% c("allele_frequency", "relative_allele_frequency")) {
-      errors = c(
-        errors,
-        sprintf(
-          "Cause '%s' is not allowed when Measure is '%s'.",
-          as.character(cause_label %||% cause_id),
-          as.character(measure_label %||% measure_id)
-        )
+  # Otherwise the (measure, cause) pair must actually occur in the data.
+  measure_label_chr = as.character(measure_label %||% "")
+  cause_label_chr = as.character(cause_label %||% "")
+  pair_ok = any(
+    measure_cause_allowed$measure_name == measure_label_chr &
+      measure_cause_allowed$cause_name == cause_label_chr
+  )
+  if (!pair_ok) {
+    errors = c(
+      errors,
+      sprintf(
+        "Cause '%s' is not allowed for Measure '%s'.",
+        as.character(cause_label %||% cause_id),
+        as.character(measure_label %||% measure_id)
       )
-    } else {
-      errors = c(
-        errors,
-        sprintf(
-          "Cause '%s' is not allowed for Measure '%s'.",
-          as.character(cause_label %||% cause_id),
-          as.character(measure_label %||% measure_id)
-        )
-      )
-    }
+    )
   }
 
   unique(errors)
@@ -840,7 +844,7 @@ build_simplified_layer = function(sf_layer, tol, cache_file, source_file) {
 # Larger admin units can tolerate a coarser tolerance; ADM2 districts are small
 # so they get a finer one. ADM0 is the detailed world coastline, so it needs the
 # coarsest tolerance (0.1 deg ~ 11 km) to shrink its payload meaningfully.
-adm0_sel_disp = build_simplified_layer(adm0_sel, 0.1, "cache_adm0_disp.rds", "ADM0.gpkg")
+adm0_sel_disp = build_simplified_layer(adm0_sel, 0.02, "cache_adm0_disp.rds", "ADM0.gpkg")
 adm1_sel_disp = build_simplified_layer(adm1_sel, 0.02, "cache_adm1_disp.rds", "ADM1.gpkg")
 adm2_sel_disp = build_simplified_layer(adm2_sel, 0.01, "cache_adm2_disp.rds", "ADM2.gpkg")
 
@@ -1114,6 +1118,25 @@ timing_list = function(timing_env) {
   as.list.environment(timing_env, all.names = TRUE)
 }
 
+# Human-friendly rendering of the data unit stored in the `metric` table
+# (the `metric_unit` column). Kept deliberately separate from the Joomla
+# "Metric" summary statistic to avoid confusion. Returns NA when no usable unit.
+format_metric_unit = function(unit) {
+  if (is.null(unit) || length(unit) == 0 || is.na(unit[[1]]) || !nzchar(as.character(unit[[1]]))) {
+    return(NA_character_)
+  }
+  u = as.character(unit[[1]])
+  if (identical(tolower(u), "percent")) "%" else u
+}
+
+# Compose a legend/label title that appends the data unit (if any) to the
+# summary-statistic name, e.g. "Mean (%)" or "Median (per 100000)".
+metric_title_with_unit = function(metric_name, unit) {
+  base = if (is.null(metric_name) || length(metric_name) == 0 || is.na(metric_name[[1]])) "Value" else as.character(metric_name[[1]])
+  pretty_unit = format_metric_unit(unit)
+  if (is.na(pretty_unit)) base else paste0(base, " (", pretty_unit, ")")
+}
+
 # Ported from IthaMaps-shinyapp/app.R lines 1022-1063: apply the curated-data
 # outlier filters and guarded weighted-mean path before aggregated metrics.
 compute_outlier_aware_metric = function(data, group_col, metric_key) {
@@ -1168,7 +1191,7 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
     ungroup() %>%
     mutate(
       Exclude = ifelse(is.na(count) | is.na(sample_size) | Entries == 0 | count == 0, TRUE, FALSE),
-      Scale = ifelse(metric_name == "percent", 100, 100000)
+      Scale = ifelse(metric_unit == "percent", 100, 100000)
     ) %>%
     group_by(.data[[group_col]]) %>%
     mutate(
@@ -1371,6 +1394,19 @@ build_query_bundle = function(raw_qs) {
     cause_label = Info$Cause
   )
 
+  # A Measure ID that was supplied but did not resolve to a supported label
+  # (e.g. a measure_name that is filtered out of the Measure lookup, such as
+  # "Carrier incidence") must be rejected explicitly. Otherwise Info$Measure is
+  # NA, the parameter filter early-returns without clearing SubsetHCP, and the
+  # leftover global healthcare subset is rendered as if Healthcare availability
+  # had been requested.
+  if (!is.null(Query$Measure) && (is.null(Info$Measure) || is.na(Info$Measure))) {
+    validation_errors = c(
+      validation_errors,
+      sprintf("Measure ID '%s' is not supported.", as.character(Query$Measure))
+    )
+  }
+
   if (length(validation_errors) > 0) {
     timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
     return(list(
@@ -1381,6 +1417,7 @@ build_query_bundle = function(raw_qs) {
       SubsetHCP = NULL,
       SubsetG = NULL,
       MetricN = NULL,
+      MetricUnit = NULL,
       validation_errors = validation_errors,
       timings = timing_list(timing_env)
     ))
@@ -1397,6 +1434,7 @@ build_query_bundle = function(raw_qs) {
       SubsetHCP = NULL,
       SubsetG = NULL,
       MetricN = NULL,
+      MetricUnit = NULL,
       validation_errors = character(),
       timings = timing_list(timing_env)
     ))
@@ -1406,6 +1444,7 @@ build_query_bundle = function(raw_qs) {
   SubsetHCP = NULL
   SubsetG = NULL
   MetricN = NULL
+  MetricUnit = NULL
 
   # --- Resolution & Region ---
   resolution_result = timed_call(timing_env, "resolution_filter", function() {
@@ -1452,6 +1491,9 @@ build_query_bundle = function(raw_qs) {
     result = list(SubsetE = SubsetE, SubsetHCP = SubsetHCP)
 
     if (is.null(SubsetE) || !("Measure" %in% names(Info)) || is.na(Info$Measure)) {
+      # Measure missing or unresolved: do not leave a populated SubsetHCP behind,
+      # otherwise a non-healthcare query would be mis-rendered as healthcare.
+      result$SubsetHCP = NULL
       return(result)
     }
 
@@ -1542,6 +1584,62 @@ build_query_bundle = function(raw_qs) {
         filter(Extra == mField) %>%
         pull(Option)
     }
+    # Capture the data unit (from the metric table) so it can be shown in the
+    # legend title and the summary table. Distinct from MetricN (the Joomla
+    # summary statistic). Only used when the whole subset shares one unit.
+    if ("metric_unit" %in% names(SubsetE)) {
+      unit_raw = as.character(SubsetE$metric_unit)
+      unit_raw[is.na(unit_raw) | !nzchar(trimws(unit_raw))] = "<missing>"
+      unit_counts = sort(table(unit_raw), decreasing = TRUE)
+
+      unit_vals = setdiff(names(unit_counts), "<missing>")
+      if (length(unit_vals) == 1) {
+        MetricUnit = unit_vals[[1]]
+      }
+
+      # DEBUG: flag queries where units are mixed/missing so we can explain why
+      # a unit is not displayed alongside the selected summary metric.
+      has_missing_units = "<missing>" %in% names(unit_counts)
+      has_mixed_units = length(unit_vals) > 1
+      has_no_units = length(unit_vals) == 0
+      if (has_missing_units || has_mixed_units || has_no_units) {
+        format_top_counts = function(x, n = 8L) {
+          if (length(x) == 0) {
+            return("none")
+          }
+          shown = head(x, n)
+          paste(paste0(names(shown), "=", as.integer(shown)), collapse = ", ")
+        }
+
+        metric_fk_counts = NULL
+        if ("metric_fk_id" %in% names(SubsetE)) {
+          metric_fk_raw = as.character(SubsetE$metric_fk_id)
+          metric_fk_raw[is.na(metric_fk_raw) | !nzchar(trimws(metric_fk_raw))] = "<missing>"
+          metric_fk_counts = sort(table(metric_fk_raw), decreasing = TRUE)
+        }
+
+        flags = c(
+          if (has_mixed_units) "mixed_units" else NULL,
+          if (has_missing_units) "missing_unit_values" else NULL,
+          if (has_no_units) "no_non_missing_unit" else NULL
+        )
+
+        cat(
+          "[ithamaps-debug][metric-unit]",
+          "qs='", normalize_query_string(raw_qs), "'",
+          " rows=", nrow(SubsetE),
+          " measure='", as.character(Info$Measure %||% ""), "'",
+          " cause='", as.character(Info$Cause %||% ""), "'",
+          " summary_metric='", as.character(Info$Metric %||% ""), "'",
+          " units={", format_top_counts(unit_counts), "}",
+          " metric_fk={", format_top_counts(metric_fk_counts), "}",
+          " FLAG=", paste(flags, collapse = ","),
+          "\n",
+          sep = ""
+        )
+        flush.console()
+      }
+    }
     group_col = switch(agg_level,
       "Country-level"  = "geo_admin0",
       "Province-level" = "geo_admin1",
@@ -1631,7 +1729,7 @@ build_query_bundle = function(raw_qs) {
 
   timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
 
-  list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, validation_errors = character(), timings = timing_list(timing_env))
+  list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, MetricUnit = MetricUnit, validation_errors = character(), timings = timing_list(timing_env))
 }
 
 build_query_bundle_cached = function(raw_qs) {
@@ -1929,6 +2027,9 @@ server = function(input, output, session) {
   })
   MetricN_r = reactive({
     query_bundle()$MetricN
+  })
+  MetricUnit_r = reactive({
+    query_bundle()$MetricUnit
   })
   validation_errors_r = reactive({
     query_bundle()$validation_errors %||% character()
@@ -2313,6 +2414,13 @@ server = function(input, output, session) {
         as.character(round(unique(metric_values)[1], 2))
       } else {
         paste0("Multiple (", length(unique(metric_values)), ")")
+      }
+      # Append the data unit (from the metric table) to the value shown, e.g.
+      # "12.5 %" or "3.2 per 100000". Kept separate from the summary-statistic
+      # name (metric_name_label) below.
+      metric_unit_pretty = format_metric_unit(MetricUnit_r())
+      if (!is.na(metric_unit_pretty) && !identical(metric_value_label, "N/A")) {
+        metric_value_label = paste0(metric_value_label, " ", metric_unit_pretty)
       }
       metric_name_label = if (is.na(metric_name_sel) || !nzchar(metric_name_sel)) "Metric" else metric_name_sel
       metric_table_html = paste0(
@@ -3250,6 +3358,7 @@ server = function(input, output, session) {
 
     SubsetG = SubsetG_r()
     MetricN = MetricN_r()
+    legend_title = metric_title_with_unit(MetricN, MetricUnit_r())
     pal_metric_obj = pal_metric_r()
     pal_metric = pal_metric_obj$pal
     legend_vals = pal_metric_obj$legend_vals
@@ -3334,7 +3443,7 @@ server = function(input, output, session) {
         addLegend(
           colors = single_colour,
           labels = format(round(single_value, 2), nsmall = 2, trim = TRUE),
-          title = MetricN,
+          title = legend_title,
           opacity = map_fill_opacity,
           position = "bottomright"
         )
@@ -3343,7 +3452,7 @@ server = function(input, output, session) {
         addLegend(
           pal = pal_metric,
           values = legend_vals,
-          title = MetricN,
+          title = legend_title,
           opacity = map_fill_opacity,
           position = "bottomright"
         )
@@ -3696,7 +3805,8 @@ server = function(input, output, session) {
       legend_vals = pal_metric_r()$legend_vals,
       single_value = pal_metric_r()$single_value,
       single_colour = pal_metric_r()$single_colour,
-      MetricN = MetricN_r()
+      MetricN = MetricN_r(),
+      MetricUnit = MetricUnit_r()
     )
 
     png_export_cache(list(key = cache_key, payload = payload))
@@ -3798,6 +3908,7 @@ server = function(input, output, session) {
       single_value = payload$single_value
       single_colour = payload$single_colour
       MetricN = payload$MetricN
+      legend_title = metric_title_with_unit(MetricN, payload$MetricUnit)
 
       plot_subsetg = SubsetG
       fill_mapping = ggplot2::aes(fill = Metric)
@@ -3809,7 +3920,7 @@ server = function(input, output, session) {
         single_colour_png = grDevices::adjustcolor(single_colour, alpha.f = map_fill_opacity)
         fill_scale = ggplot2::scale_fill_manual(
           values = stats::setNames(single_colour_png, single_label),
-          name = MetricN,
+          name = legend_title,
           drop = FALSE,
           guide = ggplot2::guide_legend(
             keywidth = grid::unit(8, "mm"),
@@ -3828,7 +3939,7 @@ server = function(input, output, session) {
           colours  = png_palette,
           limits   = range(legend_vals, na.rm = TRUE),
           na.value = "grey80",
-          name     = MetricN,
+          name     = legend_title,
           guide    = ggplot2::guide_colorbar(reverse = TRUE)
         )
       }
