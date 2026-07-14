@@ -28,7 +28,7 @@ force <- "--force" %in% args
 
 # Must match app.R: source files, output cache files, and tolerances (degrees).
 layers <- list(
-  list(source = "ADM0.gpkg", cache = "cache_adm0_disp.rds", key = "geo_admin0", region = "Region",  tol = 0.1),
+  list(source = "ADM0.gpkg", cache = "cache_adm0_disp.rds", key = "geo_admin0", region = "Region",  tol = 0.02),
   list(source = "ADM1.gpkg", cache = "cache_adm1_disp.rds", key = "geo_admin1", region = "Region1", tol = 0.02),
   list(source = "ADM2.gpkg", cache = "cache_adm2_disp.rds", key = "geo_admin2", region = "Region2", tol = 0.01)
 )
