@@ -18,6 +18,10 @@ services:
       - ITHAMAPS_PARALLEL_CACHE_BUILD=true
       # Worker cap for startup cache build; effective max is 3 (ADM0/1/2).
       - ITHAMAPS_CACHE_BUILD_CORES=3
+      # Generic non-cache parallelism toggle/worker cap used by startup tasks
+      # such as prediction asset loading. Keep the worker cap low.
+      - ITHAMAPS_PARALLEL=false
+      - ITHAMAPS_PARALLEL_CORES=2
     volumes:
       # DEV ONLY: bind-mount the app source so edits (e.g., app.R) are reflected
       # immediately inside the container without rebuilding the image.
@@ -49,6 +53,8 @@ services:
       - ITHAMAPS_DB_PORT=3306
       - DB_USER_FILE=/run/secrets/db_user
       - DB_PASSWORD_FILE=/run/secrets/db_password
+      - ITHAMAPS_PARALLEL=false
+      - ITHAMAPS_PARALLEL_CORES=2
     volumes:
       - ./:/home/rstudio/ithamaps
       - ./secrets/db_user:/run/secrets/db_user:ro

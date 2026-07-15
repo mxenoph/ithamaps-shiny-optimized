@@ -960,9 +960,54 @@ attach_display_geometry = function(sf_obj) {
 # Ported from IthaMaps-shinyapp/app.R lines 418-426: load prediction rasters,
 # priority sites, and admin lookups once so prediction mode can reuse them.
 load_prediction_assets = function() {
-  mean_admin = raster::stack(file.path("Predictions", "Mean_with_admin.tif"))
-  ci95_admin = raster::stack(file.path("Predictions", "CI95_with_admin.tif"))
-  burden_admin = raster::stack(file.path("Predictions", "Burden_with_admin.tif"))
+  # Optional startup parallelism for non-cache tasks. Keep this conservative:
+  # these reads are independent, but loading multiple rasters at once can spike
+  # RAM and disk IO, so the default stays sequential and the worker cap is 2.
+  parallel_assets_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL", unset = "false")))
+  parallel_assets_enabled = parallel_assets_flag %in% c("1", "true", "yes", "on")
+  requested_asset_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_PARALLEL_CORES", unset = NA_character_)))
+  detected_asset_workers = parallel::detectCores(logical = TRUE)
+  asset_worker_candidates = c(requested_asset_workers, detected_asset_workers, 1L)
+  asset_worker_candidates = asset_worker_candidates[!is.na(asset_worker_candidates) & asset_worker_candidates > 0]
+  asset_workers = min(2L, asset_worker_candidates[[1]])
+
+  asset_specs = list(
+    list(name = "Mean_admin", type = "raster", path = file.path("Predictions", "Mean_with_admin.tif")),
+    list(name = "CI95_admin", type = "raster", path = file.path("Predictions", "CI95_with_admin.tif")),
+    list(name = "Burden_admin", type = "raster", path = file.path("Predictions", "Burden_with_admin.tif")),
+    list(name = "Selected_sites", type = "csv", path = file.path("Predictions", "Selected-sites_with_admin.csv")),
+    list(name = "ADM0_lookup", type = "csv", path = file.path("Predictions", "ADM0_lookup.csv")),
+    list(name = "ADM1_lookup", type = "csv", path = file.path("Predictions", "ADM1_lookup.csv")),
+    list(name = "ADM2_lookup", type = "csv", path = file.path("Predictions", "ADM2_lookup.csv"))
+  )
+
+  read_asset_spec = function(spec) {
+    value = if (identical(spec$type, "raster")) {
+      raster::stack(spec$path)
+    } else {
+      read.csv(spec$path)
+    }
+    list(name = spec$name, value = value)
+  }
+
+  message(sprintf(
+    "[ithamaps] prediction asset load mode=%s workers=%d (detected_cores=%s)",
+    if (parallel_assets_enabled) "parallel" else "sequential",
+    if (parallel_assets_enabled) asset_workers else 1L,
+    ifelse(is.na(detected_asset_workers), "NA", as.character(detected_asset_workers))
+  ))
+
+  asset_results = if (parallel_assets_enabled && asset_workers > 1L) {
+    parallel::mclapply(asset_specs, read_asset_spec, mc.cores = asset_workers)
+  } else {
+    lapply(asset_specs, read_asset_spec)
+  }
+
+  assets = setNames(lapply(asset_results, `[[`, "value"), vapply(asset_results, `[[`, character(1), "name"))
+
+  mean_admin = assets[["Mean_admin"]]
+  ci95_admin = assets[["CI95_admin"]]
+  burden_admin = assets[["Burden_admin"]]
 
   mean_raster = mean_admin[["Mean"]]
   ci95_raster = ci95_admin[["CI95"]]
@@ -979,15 +1024,15 @@ load_prediction_assets = function() {
     Mean = mean_raster,
     CI95 = ci95_raster,
     Burden = burden_raster,
-    Selected_sites = read.csv(file.path("Predictions", "Selected-sites_with_admin.csv")) %>%
+    Selected_sites = assets[["Selected_sites"]] %>%
       dplyr::mutate(
         lon = as.numeric(lon),
         lat = as.numeric(lat)
       ) %>%
       dplyr::filter(!is.na(lon), !is.na(lat)),
-    ADM0_lookup = read.csv(file.path("Predictions", "ADM0_lookup.csv")),
-    ADM1_lookup = read.csv(file.path("Predictions", "ADM1_lookup.csv")),
-    ADM2_lookup = read.csv(file.path("Predictions", "ADM2_lookup.csv")),
+    ADM0_lookup = assets[["ADM0_lookup"]],
+    ADM1_lookup = assets[["ADM1_lookup"]],
+    ADM2_lookup = assets[["ADM2_lookup"]],
     Mean_min = min(mean_raster[], na.rm = TRUE),
     Mean_max = max(mean_raster[], na.rm = TRUE),
     CI95_min = min(ci95_raster[], na.rm = TRUE),
