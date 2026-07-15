@@ -1,0 +1,55 @@
+services:
+  ithamaps-shiny:
+    image: ithamaps-shiny
+    container_name: ithamaps-shiny
+    restart: unless-stopped
+    ports:
+      - "3838:3838"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - ITHAMAPS_MACHINE=docker
+      - ITHAMAPS_DB_HOST=host.docker.internal
+      - ITHAMAPS_DB_PORT=3306
+      - DB_USER_FILE=/run/secrets/db_user
+      - DB_PASSWORD_FILE=/run/secrets/db_password
+      # Enable startup parallel cache rebuild in global.R when cache files are
+      # missing/stale/invalid. Set false to force sequential behavior.
+      - ITHAMAPS_PARALLEL_CACHE_BUILD=true
+      # Worker cap for startup cache build; effective max is 3 (ADM0/1/2).
+      - ITHAMAPS_CACHE_BUILD_CORES=3
+    volumes:
+      # DEV ONLY: bind-mount the app source so edits (e.g., app.R) are reflected
+      # immediately inside the container without rebuilding the image.
+      # Remove this line before production deployment to run only the baked image.
+      - ./:/srv/shiny-server
+      - ./secrets/db_user:/run/secrets/db_user:ro
+      - ./secrets/db_password:/run/secrets/db_password:ro
+
+  # DEV ONLY: RStudio Server for interactively testing global.R / ui.R /
+  # server.R (e.g. source("global.R") and inspect db_ithamaps_entries,
+  # build_query_bundle(), etc.) with the same packages and DB access as
+  # ithamaps-shiny. Open http://localhost:8787 and log in as user "rstudio"
+  # with the password below. Change PASSWORD before exposing this beyond your
+  # local machine.
+  ithamaps-rstudio:
+    build:
+      context: .
+      dockerfile: Dockerfile.rstudio
+    container_name: ithamaps-rstudio
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PASSWORD=ithamaps
+      - ITHAMAPS_MACHINE=docker
+      - ITHAMAPS_DB_HOST=host.docker.internal
+      - ITHAMAPS_DB_PORT=3306
+      - DB_USER_FILE=/run/secrets/db_user
+      - DB_PASSWORD_FILE=/run/secrets/db_password
+    volumes:
+      - ./:/home/rstudio/ithamaps
+      - ./secrets/db_user:/run/secrets/db_user:ro
+      - ./secrets/db_password:/run/secrets/db_password:ro
