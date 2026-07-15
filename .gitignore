@@ -1,0 +1,4 @@
+# Cached pre-simplified display geometry (regenerated at startup from ADM*.gpkg)
+cache_adm0_disp.rds
+cache_adm1_disp.rds
+cache_adm2_disp.rds

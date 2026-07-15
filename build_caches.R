@@ -16,6 +16,9 @@
 # Usage:
 #   Rscript build_caches.R          # build any missing/stale caches
 #   Rscript build_caches.R --force  # rebuild all caches unconditionally
+#   Rscript build_caches.R --parallel            # run layers in parallel
+#   Rscript build_caches.R --parallel --cores=3  # explicit worker count
+#   BUILD_CACHES_CORES=3 Rscript build_caches.R --parallel
 # ---------------------------------------------------------------------------
 
 suppressPackageStartupMessages({
@@ -25,13 +28,37 @@ suppressPackageStartupMessages({
 
 args <- commandArgs(trailingOnly = TRUE)
 force <- "--force" %in% args
+parallel_mode <- "--parallel" %in% args
 
-# Must match app.R: source files, output cache files, and tolerances (degrees).
-layers <- list(
+parse_cores_arg <- function(args) {
+  cores_arg <- grep("^--cores=", args, value = TRUE)
+  if (length(cores_arg) == 0) {
+    return(NA_integer_)
+  }
+  suppressWarnings(as.integer(sub("^--cores=", "", cores_arg[[1]])))
+}
+
+requested_cores <- parse_cores_arg(args)
+env_cores <- suppressWarnings(as.integer(Sys.getenv("BUILD_CACHES_CORES", unset = NA_character_)))
+detected_cores <- parallel::detectCores(logical = TRUE)
+
+# We only have 3 independent layers; extra workers add overhead/memory pressure.
+max_layer_workers <- length(layers <- list(
   list(source = "ADM0.gpkg", cache = "cache_adm0_disp.rds", key = "geo_admin0", region = "Region",  tol = 0.02),
   list(source = "ADM1.gpkg", cache = "cache_adm1_disp.rds", key = "geo_admin1", region = "Region1", tol = 0.02),
   list(source = "ADM2.gpkg", cache = "cache_adm2_disp.rds", key = "geo_admin2", region = "Region2", tol = 0.01)
-)
+))
+
+worker_candidates <- c(requested_cores, env_cores, detected_cores, 1L)
+worker_candidates <- worker_candidates[!is.na(worker_candidates) & worker_candidates > 0]
+workers <- min(max_layer_workers, worker_candidates[[1]])
+
+if (!parallel_mode) {
+  workers <- 1L
+}
+
+# Must match app.R: source files, output cache files, and tolerances (degrees).
+# layers are defined above (needed for worker cap calculation).
 
 geom_mb <- function(x) round(as.numeric(object.size(st_geometry(x))) / 1024^2, 1)
 
@@ -93,5 +120,17 @@ build_one <- function(spec) {
   invisible(NULL)
 }
 
-for (spec in layers) build_one(spec)
+message(sprintf(
+  "[build_caches] mode=%s workers=%d (detected_cores=%s)",
+  if (parallel_mode) "parallel" else "sequential",
+  workers,
+  ifelse(is.na(detected_cores), "NA", as.character(detected_cores))
+))
+
+if (parallel_mode && workers > 1L) {
+  invisible(parallel::mclapply(layers, build_one, mc.cores = workers))
+} else {
+  invisible(lapply(layers, build_one))
+}
+
 message("[build_caches] done")

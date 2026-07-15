@@ -1,0 +1,22 @@
+# DEV ONLY: RStudio Server for interactively testing global.R / ui.R / server.R
+# against the same R packages and DB configuration as the ithamaps-shiny
+# service. Not intended for production deployment.
+FROM rocker/geospatial:latest
+
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libudunits2-dev \
+        libgdal-dev \
+        libgeos-dev \
+        libproj-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Same R package set as Dockerfile (ithamaps-shiny), so global.R behaves
+# identically when sourced interactively here.
+RUN R -e "options(Ncpus = max(1L, parallel::detectCores(logical = TRUE) - 2L)); install.packages(c('DT', 'sf', 'dplyr', 'bslib', 'shiny', 'readxl', 'stringr', 'metafor', 'leaflet', 'viridis', 'ggplot2', 'RMariaDB', 'raster', 'webshot2', 'shinycssloaders', 'zip', 'box', 'future', 'future.apply', 'ragg', 'jsonlite'))"
+
+# Same connection env vars as Dockerfile — override at runtime, never bake values in.
+ENV ITHAMAPS_MACHINE=docker \
+    ITHAMAPS_DB_HOST="" \
+    ITHAMAPS_DB_PORT=""

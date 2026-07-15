@@ -122,21 +122,20 @@ read_db_prefixes = function(path = "secrets/db_prefix") {
   lines = lines[nzchar(lines)]
   lines = lines[!startsWith(lines, "#")]
 
-  for (line in lines) {
+  Reduce(function(acc, line) {
     parts = strsplit(line, "=", fixed = TRUE)[[1]]
     if (length(parts) < 2) {
-      next
+      return(acc)
     }
     key = trimws(parts[1])
     value = trimws(paste(parts[-1], collapse = "="))
     value = gsub('^"|"$', "", value)
     value = gsub("^'|'$", "", value)
-    if (key %in% names(defaults) && nzchar(value)) {
-      defaults[[key]] = value
+    if (key %in% names(acc) && nzchar(value)) {
+      acc[[key]] = value
     }
-  }
-
-  defaults
+    acc
+  }, lines, init = defaults)
 }
 
 db_prefixes = read_db_prefixes()
@@ -189,16 +188,17 @@ Datatables = Datatables[Datatables %in% c(
   "ithagenes_globin_phen"
 )]
 
-for (Data in Datatables) {
-  assign(
-    paste("db_", Data, sep = ""),
-    (dbReadTable(Ithanet, Data) %>% as_tibble())
-  )
-}
+list2env(
+  setNames(
+    lapply(Datatables, function(Data) dbReadTable(Ithanet, Data) %>% as_tibble()),
+    paste0("db_", Datatables)
+  ),
+  envir = .GlobalEnv
+)
 
 dbDisconnect(Ithanet)
 
-rm(Ithanet, Data, Datatables)
+rm(Ithanet, Datatables)
 
 # Connection to joomla
 Joomla = open_mariadb_connection(joomla_dbname, Configuration)
@@ -206,16 +206,17 @@ Joomla = open_mariadb_connection(joomla_dbname, Configuration)
 Datatables = dbListTables(Joomla)
 Datatables = Datatables[Datatables %in% c("itha_experts")]
 
-for (Data in Datatables) {
-  assign(
-    paste("db_", Data, sep = ""),
-    (dbReadTable(Joomla, Data) %>% as_tibble())
-  )
-}
+list2env(
+  setNames(
+    lapply(Datatables, function(Data) dbReadTable(Joomla, Data) %>% as_tibble()),
+    paste0("db_", Datatables)
+  ),
+  envir = .GlobalEnv
+)
 
 dbDisconnect(Joomla)
 
-rm(Joomla, Data, Datatables)
+rm(Joomla, Datatables)
 
 # ---------------------------------------------------------------------------
 # Join diagnostics: export and silence expected many-to-many joins
@@ -302,6 +303,7 @@ Note_function = function(end_year_assumed, region_comment, nationality_comment, 
 }
 
 db_ithamaps_entries = db_ithamaps_entries %>%
+  select(-starts_with("v_")) %>%
   rename("phen_id" = globin_phenotype) %>%
   left_join(db_globin_phenotypes %>%
     rename(
@@ -317,6 +319,7 @@ db_ithamaps_entries = db_ithamaps_entries %>%
   # never confused with the Joomla "Metric" summary-statistic parameter/column.
   left_join(db_metric %>% rename(metric_unit = metric_name), by = "metric_id") %>%
   left_join(db_ithamaps_cohort %>%
+    select(-starts_with("v_")) %>%
     rename(
       "cohort_id" = cid,
       "source_id" = source,
@@ -362,12 +365,18 @@ db_ithamaps_entries = db_ithamaps_entries %>%
       rename("identifier" = id, "phenotype" = name) %>%
       select(identifier, phenotype) %>%
       mutate(phenotype = case_when(
-        phenotype %in% c("α0") ~ "α0",
-        phenotype %in% c("α⁺", "α+/α0") ~ "α+",
-        phenotype %in% c("β0") ~ "β0",
-        phenotype %in% c("β+", "β++", "β++ (silent)", "β0 / β+") ~ "β+",
-        phenotype %in% c("δ0") ~ "δ0",
-        phenotype %in% c("δ+") ~ "δ+",
+        # id = 1 => -- α0
+        identifier %in% c(1) ~ "α0",
+        # id = 2 => -- α+, id = 3 => -- α+/α0
+        identifier %in% c(2, 3) ~ "α+",
+        # id = 4 => -- β0
+        identifier %in% c(4) ~ "β0",
+        # id = 5 => -- β+, id = 7 => -- β++, id = 8 => -- β++ (silent), id = 9 => -- β0 / β+
+        identifier %in% c(5, 7, 8, 9) ~ "β+",
+        # id = 10 => -- δ0
+        identifier %in% c(10) ~ "δ0",
+        # id = 11 => -- δ+
+        identifier %in% c(11) ~ "δ+",
         TRUE ~ NA_character_
       )), by = "identifier") %>%
     filter(!is.na(phenotype)) %>%
@@ -440,8 +449,11 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     ),
     phenotype = ifelse(measure_name == "Relative allele frequency" & is.na(phenotype), "Other", phenotype),
     ithaID = ifelse(is.na(ithaID), "Not applicable", ithaID),
-    count = as.integer(formatC(as.numeric(count), format = "f", digits = 0)),
-    sample_size = as.integer(formatC(as.numeric(sample_size), format = "f", digits = 0))
+    # count / sample_size are nullable in the DB; suppressWarnings() silences the
+    # expected "NAs introduced by coercion" when a non-numeric/empty value
+    # (e.g. NULL, "") is coerced to NA rather than a real parse failure.
+    count = suppressWarnings(as.integer(formatC(as.numeric(count), format = "f", digits = 0))),
+    sample_size = suppressWarnings(as.integer(formatC(as.numeric(sample_size), format = "f", digits = 0)))
   ) %>%
   rowwise() %>%
   mutate(note = Note_function(end_year_assumed, region_comment, nationality_comment, comments, sample_size_comment)) %>%
@@ -720,14 +732,17 @@ Healthcare = data.frame(
   filter(is.na(Extra)) %>%
   select(-Extra)
 
-for (x in 1:13) {
-  assign(
-    paste0("HealthcareS", x),
-    db_hc_policies %>%
-      filter(ancestor0 == x) %>%
-      select(ID = hcp_id, Option = hcp_name)
-  )
-}
+list2env(
+  setNames(
+    lapply(1:13, function(x) {
+      db_hc_policies %>%
+        filter(ancestor0 == x) %>%
+        select(ID = hcp_id, Option = hcp_name)
+    }),
+    paste0("HealthcareS", 1:13)
+  ),
+  envir = .GlobalEnv
+)
 
 GlobinPheAF = data.frame(
   ID = db_globin_phenotypes$id,
@@ -772,7 +787,7 @@ DataType = data.frame(
   Option = c("Curated data", "Prediction data")
 )
 
-rm(x, Configuration, list = setdiff(ls(pattern = "^db_"), c("db_hcp_per_region", "db_ithamaps_entries")))
+rm(Configuration, list = setdiff(ls(pattern = "^db_"), c("db_hcp_per_region", "db_ithamaps_entries")))
 
 # ---------------------------------------------------------------------------
 # Cache spatial files once at startup (re-used per session in server)
@@ -867,9 +882,52 @@ build_simplified_layer = function(sf_layer, tol, cache_file, source_file) {
 # Larger admin units can tolerate a coarser tolerance; ADM2 districts are small
 # so they get a finer one. ADM0 is the detailed world coastline, so it needs the
 # coarsest tolerance (0.1 deg ~ 11 km) to shrink its payload meaningfully.
-adm0_sel_disp = build_simplified_layer(adm0_sel, 0.02, "cache_adm0_disp.rds", "ADM0.gpkg")
-adm1_sel_disp = build_simplified_layer(adm1_sel, 0.02, "cache_adm1_disp.rds", "ADM1.gpkg")
-adm2_sel_disp = build_simplified_layer(adm2_sel, 0.01, "cache_adm2_disp.rds", "ADM2.gpkg")
+cache_specs = list(
+  list(name = "adm0_sel_disp", layer = adm0_sel, tol = 0.02, cache = "cache_adm0_disp.rds", source = "ADM0.gpkg"),
+  list(name = "adm1_sel_disp", layer = adm1_sel, tol = 0.02, cache = "cache_adm1_disp.rds", source = "ADM1.gpkg"),
+  list(name = "adm2_sel_disp", layer = adm2_sel, tol = 0.01, cache = "cache_adm2_disp.rds", source = "ADM2.gpkg")
+)
+
+# Optional startup parallelism for cache (re)generation when cache files are
+# missing/stale/invalid. Cache-hit paths remain fast and mostly unaffected.
+parallel_cache_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL_CACHE_BUILD", unset = "false")))
+parallel_cache_enabled = parallel_cache_flag %in% c("1", "true", "yes", "on")
+requested_cache_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_CACHE_BUILD_CORES", unset = NA_character_)))
+detected_cache_workers = parallel::detectCores(logical = TRUE)
+cache_worker_candidates = c(requested_cache_workers, detected_cache_workers, 1L)
+cache_worker_candidates = cache_worker_candidates[!is.na(cache_worker_candidates) & cache_worker_candidates > 0]
+# Only three independent layers exist, so cap workers at 3 to avoid excess
+# memory pressure with no throughput gain.
+cache_workers = min(length(cache_specs), cache_worker_candidates[[1]])
+
+cache_build_message = sprintf(
+  "[ithamaps] startup cache build mode=%s workers=%d (detected_cores=%s)",
+  if (parallel_cache_enabled) "parallel" else "sequential",
+  if (parallel_cache_enabled) cache_workers else 1L,
+  ifelse(is.na(detected_cache_workers), "NA", as.character(detected_cache_workers))
+)
+message(cache_build_message)
+
+build_spec = function(spec) {
+  build_simplified_layer(spec$layer, spec$tol, spec$cache, spec$source)
+}
+
+# Parallel branch is Linux/container-only here via mclapply (forking), which
+# matches this deployment target.
+cache_results = if (parallel_cache_enabled && cache_workers > 1L) {
+  parallel::mclapply(cache_specs, build_spec, mc.cores = cache_workers)
+} else {
+  lapply(cache_specs, build_spec)
+}
+
+names(cache_results) = vapply(cache_specs, function(spec) spec$name, character(1))
+adm0_sel_disp = cache_results[["adm0_sel_disp"]]
+adm1_sel_disp = cache_results[["adm1_sel_disp"]]
+adm2_sel_disp = cache_results[["adm2_sel_disp"]]
+
+rm(cache_specs, cache_results, parallel_cache_flag, parallel_cache_enabled,
+  requested_cache_workers, detected_cache_workers, cache_worker_candidates,
+  cache_workers, cache_build_message, build_spec)
 
 # attach_display_geometry(): replace an sf object's geometry with the cached,
 # pre-simplified geometry, matched by the finest available admin key. Cheap
@@ -1031,14 +1089,17 @@ Parse = function(Query) {
     raw_key
   }
 
-  for (x in strsplit(qs, "&")[[1]]) {
-    Item = strsplit(x, "=")[[1]]
+  parts = strsplit(qs, "&", fixed = TRUE)[[1]]
+  items = Filter(Negate(is.null), lapply(parts, function(x) {
+    Item = strsplit(x, "=", fixed = TRUE)[[1]]
     if (length(Item) == 2) {
-      key = canonicalize_key(Item[1])
-      Info[[key]] = Item[2]
+      list(key = canonicalize_key(Item[1]), value = Item[2])
     }
-  }
-  Info
+  }))
+  Reduce(function(acc, item) {
+    acc[[item$key]] = item$value
+    acc
+  }, items, init = Info)
 }
 
 Extract = function(Query) {
@@ -1062,18 +1123,19 @@ Extract = function(Query) {
   )
   expected_keys = c(expected_keys, paste0("HealthcareS", 1:13))
 
-  for (x in expected_keys) {
-    parsed = parse_int(Query[[x]])
-    if (!is.null(parsed)) Info[[x]] = parsed
-  }
+  parsed_values = lapply(expected_keys, function(x) parse_int(Query[[x]]))
+  names(parsed_values) = expected_keys
+  Info = Filter(Negate(is.null), parsed_values)
 
   if (is.null(Info[["Cause"]])) {
-    for (legacy_key in c("HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP")) {
-      parsed = parse_int(Query[[legacy_key]])
-      if (!is.null(parsed)) {
-        Info[["Cause"]] = parsed
-        break
-      }
+    legacy_values = Filter(
+      Negate(is.null),
+      lapply(c("HemoglobinopathyH", "HemoglobinopathyC", "HemoglobinopathyP"), function(legacy_key) {
+        parse_int(Query[[legacy_key]])
+      })
+    )
+    if (length(legacy_values) > 0) {
+      Info[["Cause"]] = legacy_values[[1]]
     }
   }
 
@@ -1230,7 +1292,7 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
               data = escalc(
                 xi = count,
                 ni = sample_size,
-                data = cur_data() %>% filter(Exclude == FALSE),
+                data = pick() %>% filter(Exclude == FALSE),
                 measure = "PFT",
                 add = 0
               ),
@@ -1401,10 +1463,12 @@ build_query_bundle = function(raw_qs) {
     GlobinPheRAF = GlobinPheRAF, IthaID = IthaID, Metric = Metric, Aggregation = Aggregation
   )
 
-  Info = list()
-  for (x in names(Query)) {
-    if (x %in% names(lookup)) Info[[x]] = Search(x, Query[[x]], lookup[[x]])
-  }
+  Info = Reduce(function(acc, x) {
+    if (x %in% names(lookup)) {
+      acc[[x]] = Search(x, Query[[x]], lookup[[x]])
+    }
+    acc
+  }, names(Query), init = list())
 
   if (is.null(Info$DataType) || is.na(Info$DataType)) {
     Info$DataType = "Curated data"
@@ -1533,16 +1597,17 @@ build_query_bundle = function(raw_qs) {
           result$SubsetHCP = result$SubsetHCP %>%
             filter(hcp_name_ancestor == Field) %>%
             select(-hcp_name_ancestor)
-          for (sn in 1:13) {
-            key = paste0("HealthcareS", sn)
-            if (key %in% names(Info) && !is.na(Info[[key]])) {
-              HCS = lookup[[key]]
-              Field = HCS[HCS$Option == Info[[key]], "Option"]
-              result$SubsetHCP = result$SubsetHCP %>%
-                filter(hcp_name == Field) %>%
-                select(-hcp_name)
-              break
-            }
+          healthcare_keys = paste0("HealthcareS", 1:13)
+          matched_key = healthcare_keys[
+            vapply(healthcare_keys, function(key) key %in% names(Info) && !is.na(Info[[key]]), logical(1))
+          ]
+          if (length(matched_key) > 0) {
+            key = matched_key[[1]]
+            HCS = lookup[[key]]
+            Field = HCS[HCS$Option == Info[[key]], "Option"]
+            result$SubsetHCP = result$SubsetHCP %>%
+              filter(hcp_name == Field) %>%
+              select(-hcp_name)
           }
         }
       }
@@ -1552,6 +1617,8 @@ build_query_bundle = function(raw_qs) {
         filter(measure_name == Field) %>%
         select(-measure_name)
       if (Field == "Allele frequency") {
+        # Allele frequency does not use Cause; keep `ithaID` in SubsetE because
+        # downstream outputs (markers/details/exports) reference it.
         result$SubsetE = result$SubsetE %>% select(-cause_name)
         if ("GlobinPheAF" %in% names(Info) && !is.na(Info$GlobinPheAF)) {
           Field = GlobinPheAF[GlobinPheAF$Option == Info$GlobinPheAF, "Option"]

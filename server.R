@@ -50,6 +50,98 @@ server = function(input, output, session) {
     flush.console()
   }
 
+  infer_ithanet_root = function() {
+    # Optional explicit override for environments where URL inference is not
+    # reliable (reverse proxies, custom ports, non-standard paths).
+    root_override = trimws(Sys.getenv("ITHANET_SITE_ROOT", unset = ""))
+    if (nzchar(root_override)) {
+      return(sub("/+$", "", root_override))
+    }
+
+    # Preferred runtime override from the iframe query string, intended to be
+    # passed from Joomla as SiteRoot=<URI::root()>.
+    raw_qs = normalize_query_string(session$clientData$url_search %||% "")
+    if (nzchar(raw_qs)) {
+      qs_parts = strsplit(raw_qs, "&", fixed = TRUE)[[1]]
+      for (part in qs_parts) {
+        kv = strsplit(part, "=", fixed = TRUE)[[1]]
+        if (length(kv) != 2) {
+          next
+        }
+        key = tolower(utils::URLdecode(kv[[1]]))
+        if (key %in% c("siteroot", "joomlaroot", "ithanetroot")) {
+          val = trimws(utils::URLdecode(kv[[2]]))
+          if (nzchar(val)) {
+            return(sub("/+$", "", val))
+          }
+        }
+      }
+    }
+
+    proto_raw = as.character(session$clientData$url_protocol %||% "http:")
+    proto = sub(":$", "", proto_raw)
+    host = as.character(session$clientData$url_hostname %||% "")
+    port = as.character(session$clientData$url_port %||% "")
+    origin = if (nzchar(host)) {
+      default_port = (proto == "http" && identical(port, "80")) || (proto == "https" && identical(port, "443"))
+      paste0(proto, "://", host, if (nzchar(port) && !default_port) paste0(":", port) else "")
+    } else {
+      ""
+    }
+
+    ref = as.character(session$request$HTTP_REFERER %||% "")
+    if (!nzchar(ref)) {
+      # When embedded under Joomla, referrer can be suppressed by policy. Avoid
+      # leaking the Shiny port into links; fall back to host origin without
+      # internal app ports.
+      if (identical(port, "3838")) {
+        return(paste0(proto, "://", host))
+      }
+      return(origin)
+    }
+
+    m = regexec("^(https?)://([^/]+)(/[^?#]*)?", ref, perl = TRUE)
+    g = regmatches(ref, m)[[1]]
+    if (length(g) < 3) {
+      return(origin)
+    }
+
+    ref_origin = paste0(g[[2]], "://", g[[3]])
+    ref_path = if (length(g) >= 4 && !is.na(g[[4]])) g[[4]] else ""
+    root_path = ""
+
+    if (nzchar(ref_path)) {
+      if (grepl("/index\\.php", ref_path, ignore.case = TRUE)) {
+        root_path = sub("/index\\.php.*$", "", ref_path, ignore.case = TRUE)
+      } else if (grepl("/db/", ref_path, ignore.case = TRUE)) {
+        root_path = sub("/db/.*$", "", ref_path, ignore.case = TRUE)
+      }
+    }
+
+    root_path = sub("/+$", "", root_path)
+    if (identical(root_path, "/")) {
+      root_path = ""
+    }
+
+    out = paste0(ref_origin, root_path)
+    sub("/+$", "", out)
+  }
+
+  build_ithaid_link = function(itha_id, root) {
+    id_chr = as.character(itha_id %||% "")
+    if (!nzchar(id_chr) || is.na(id_chr) || identical(id_chr, "Not applicable")) {
+      return(id_chr)
+    }
+
+    safe_id = htmltools::htmlEscape(id_chr)
+    href = paste0(sub("/+$", "", root), "/db/ithagenes?ithaID=", utils::URLencode(id_chr, reserved = TRUE))
+    paste0(
+      "<a href=\"", htmltools::htmlEscape(href), "\" target=\"_blank\" rel=\"noopener noreferrer\">",
+      safe_id,
+      "</a>"
+    )
+  }
+
   startup_ua = substr(session$request$HTTP_USER_AGENT %||% "", 1, 140)
   startup_ref = substr(session$request$HTTP_REFERER %||% "", 1, 140)
   log_trace("session_start", paste0("ua='", startup_ua, "' ref='", startup_ref, "'"))
@@ -1195,7 +1287,7 @@ server = function(input, output, session) {
     values = extract_prediction_values(click$lng, click$lat)
     selected_prediction_point(values)
 
-    for (map_id in c("map_mean", "map_ci95", "map_burden", "map_ci95_2")) {
+    invisible(lapply(c("map_mean", "map_ci95", "map_burden", "map_ci95_2"), function(map_id) {
       leafletProxy(map_id) %>%
         clearGroup("selected_point") %>%
         addCircleMarkers(
@@ -1208,7 +1300,7 @@ server = function(input, output, session) {
           weight = 2,
           group = "selected_point"
         )
-    }
+    }))
   }
 
   current_prediction_extent = reactive({
@@ -1591,6 +1683,11 @@ server = function(input, output, session) {
           return(list(type = "native", options = character(0)))
         }
         vals = as.character(col)
+        if (identical(col_name, "IthaID")) {
+          # IthaID cells are rendered as HTML anchors; dropdown filters should
+          # display only the raw ID text values.
+          vals = gsub("<[^>]*>", "", vals)
+        }
         vals = trimws(vals)
         vals = vals[!is.na(vals) & nzchar(vals)]
         vals = sort(unique(vals))
@@ -1736,9 +1833,25 @@ server = function(input, output, session) {
         "Population tested positive", "Value", "Cohort", "Nationality", "Ethnicity",
         "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source"
       )
+
+    requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
+    if (identical(requested_measure, "Allele frequency")) {
+      df = df %>% dplyr::select(-any_of("IthaID"))
+    }
+    if (identical(requested_measure, "Relative allele frequency")) {
+      df = df %>% dplyr::select(-any_of("Globin phenotype"))
+    }
+
+    if ("IthaID" %in% names(df)) {
+      ithanet_root = infer_ithanet_root()
+      df = df %>%
+        mutate(IthaID = vapply(IthaID, function(x) build_ithaid_link(x, ithanet_root), character(1)))
+    }
+
     table_widget = datatable(df,
       selection = "multiple",
       filter = "top",
+      escape = setdiff(names(df), "IthaID"),
       options = list(
         pageLength = 10,
         lengthChange = FALSE,
