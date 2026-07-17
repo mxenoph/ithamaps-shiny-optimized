@@ -1078,6 +1078,28 @@ load_prediction_assets = function() {
   ci95_colours = viridis::viridis(10, option = "G", end = 0.9)
   burden_colours = viridis::viridis(10, option = "F", end = 0.9)
 
+  # Pre-extract raster values at each priority site once at startup so map
+  # renders can use popup_html directly without per-render extraction.
+  selected_sites_df = assets[["Selected_sites"]] %>%
+    dplyr::mutate(lon = as.numeric(lon), lat = as.numeric(lat)) %>%
+    dplyr::filter(!is.na(lon), !is.na(lat))
+
+  if (nrow(selected_sites_df) > 0) {
+    site_coords = cbind(selected_sites_df$lon, selected_sites_df$lat)
+    selected_sites_df$mean_pred   = raster::extract(mean_raster,   site_coords)
+    selected_sites_df$ci95_pred   = raster::extract(ci95_raster,   site_coords)
+    selected_sites_df$burden_pred = raster::extract(burden_raster, site_coords)
+    selected_sites_df$popup_html  = paste0(
+      "<strong>ADM0:</strong> ",             selected_sites_df$ADM0, "<br>",
+      "<strong>ADM1:</strong> ",             selected_sites_df$ADM1, "<br>",
+      "<strong>ADM2:</strong> ",             selected_sites_df$ADM2, "<br>",
+      "<strong>Lon / Lat:</strong> ",        round(selected_sites_df$lon, 4), ", ", round(selected_sites_df$lat, 4), "<br>",
+      "<strong>Mean prevalence:</strong> ",  ifelse(is.na(selected_sites_df$mean_pred),   "No data", round(selected_sites_df$mean_pred,   4)), "<br>",
+      "<strong>Uncertainty (95% CI):</strong> ", ifelse(is.na(selected_sites_df$ci95_pred),   "No data", round(selected_sites_df$ci95_pred,   4)), "<br>",
+      "<strong>Est. carriers:</strong> ",    ifelse(is.na(selected_sites_df$burden_pred), "No data", round(selected_sites_df$burden_pred, 4))
+    )
+  }
+
   list(
     Mean_admin = mean_admin,
     CI95_admin = ci95_admin,
@@ -1085,13 +1107,7 @@ load_prediction_assets = function() {
     Mean = mean_raster,
     CI95 = ci95_raster,
     Burden = burden_raster,
-    Selected_sites = assets[["Selected_sites"]] %>%
-
-      dplyr::mutate(
-        lon = as.numeric(lon),
-        lat = as.numeric(lat)
-      ) %>%
-      dplyr::filter(!is.na(lon), !is.na(lat)),
+    Selected_sites = selected_sites_df,
     ADM0_lookup = assets[["ADM0_lookup"]],
     ADM1_lookup = assets[["ADM1_lookup"]],
     ADM2_lookup = assets[["ADM2_lookup"]],

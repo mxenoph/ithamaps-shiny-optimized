@@ -1033,7 +1033,13 @@ server = function(input, output, session) {
 
   # Ported from IthaMaps-shinyapp/app.R lines 513-722: build prediction-mode
   # legends, synchronized map behaviour, and click-based raster interrogation.
-  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
+  # Popup pane is inside leaflet-map-pane which has a CSS transform, creating
+  # its own stacking context. Controls sit at z-index 1000 *outside* that
+  # context, so popup pane z-index 700 always loses regardless of its value.
+  # Fix: for each map, move its popup pane to be a direct sibling of the
+  # controls (child of leaflet-container) and mirror the map pane's transform
+  # so popup lat/lng positions remain correct during pan/zoom.
+  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; var mapPane = map.getPane('mapPane'); var popupPane = map.getPane('popupPane'); var container = map.getContainer(); if (mapPane && popupPane && popupPane.parentNode !== container) { container.appendChild(popupPane); popupPane.style.zIndex = '1100'; var syncPopupPane = function() { var pos = L.DomUtil.getPosition(mapPane); if (pos) { L.DomUtil.setPosition(popupPane, pos); } }; map.on('move zoom viewreset', syncPopupPane); syncPopupPane(); } function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});}); maps.forEach(function(m) { var pane = m.getPane('popupPane'); if (!pane) { return; } pane.addEventListener('click', function(e) { var el = e.target; var isClose = false; while (el && el !== pane) { if (el.classList && el.classList.contains('leaflet-popup-close-button')) { isClose = true; break; } el = el.parentNode; } if (!isClose) { return; } if (window.syncedPopupClosing) { return; } window.syncedPopupClosing = true; maps.forEach(function(other) { if (other !== m) { var toRemove = []; other.eachLayer(function(layer) { if (layer instanceof L.Popup) { toRemove.push(layer); } }); toRemove.forEach(function(p) { other.removeLayer(p); }); other.closePopup(); } }); window.syncedPopupClosing = false; }, true); });} initialiseSync();}"
 
   cluster_hover_js = function(default_fill, default_stroke) {
     paste(
@@ -1278,9 +1284,31 @@ server = function(input, output, session) {
     values = extract_prediction_values(click$lng, click$lat)
     selected_prediction_point(values)
 
+    mean_value   = ifelse(is.null(values) || is.na(values$Mean),   "No data", round(values$Mean,   4))
+    ci95_value   = ifelse(is.null(values) || is.na(values$CI95),   "No data", round(values$CI95,   4))
+    burden_value = ifelse(is.null(values) || is.na(values$Burden), "No data", round(values$Burden, 4))
+
+    point_popup = if (!is.null(values)) {
+      paste0(
+        "<table style='border-collapse:collapse; font-size:0.82rem; min-width:220px;'>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>Longitude</td><td style='padding:2px 6px;'>",   round(values$Longitude, 5), "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>Latitude</td><td style='padding:2px 6px;'>",    round(values$Latitude,  5), "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>ADM0</td><td style='padding:2px 6px;'>",        values$ADM0,                "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>ADM1</td><td style='padding:2px 6px;'>",        values$ADM1,                "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>ADM2</td><td style='padding:2px 6px;'>",        values$ADM2,                "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>Mean prevalence</td><td style='padding:2px 6px;'>",   mean_value,   "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>Uncertainty (95% CI)</td><td style='padding:2px 6px;'>", ci95_value,   "</td></tr>",
+        "<tr><td style='padding:2px 6px; font-weight:600;'>Est. carriers</td><td style='padding:2px 6px;'>",     burden_value, "</td></tr>",
+        "</table>"
+      )
+    } else {
+      NULL
+    }
+
     invisible(lapply(c("map_mean", "map_ci95_2", "map_burden"), function(map_id) {
       leafletProxy(map_id) %>%
         clearGroup("selected_point") %>%
+        clearPopups() %>%
         addCircleMarkers(
           lng = click$lng,
           lat = click$lat,
@@ -1290,6 +1318,11 @@ server = function(input, output, session) {
           fillOpacity = 1,
           weight = 2,
           group = "selected_point"
+        ) %>%
+        addPopups(
+          lng = click$lng,
+          lat = click$lat,
+          popup = point_popup
         )
     }))
   }
@@ -1387,13 +1420,7 @@ server = function(input, output, session) {
         radius = 5, color = "white", fillColor = "black",
         fillOpacity = 0.9, weight = 1.5,
         group = "Priority Sites for Epidemiological Surveillance",
-        popup = ~ paste0(
-          "<strong>ADM0:</strong> ", ADM0, "<br>",
-          "<strong>ADM1:</strong> ", ADM1, "<br>",
-          "<strong>ADM2:</strong> ", ADM2, "<br>",
-          "<strong>Longitude:</strong> ", lon, "<br>",
-          "<strong>Latitude:</strong> ", lat
-        )
+        popup = ~popup_html
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
@@ -1413,13 +1440,7 @@ server = function(input, output, session) {
         radius = 5, color = "white", fillColor = "black",
         fillOpacity = 0.9, weight = 1.5,
         group = "Priority Sites for Epidemiological Surveillance",
-        popup = ~ paste0(
-          "<strong>ADM0:</strong> ", ADM0, "<br>",
-          "<strong>ADM1:</strong> ", ADM1, "<br>",
-          "<strong>ADM2:</strong> ", ADM2, "<br>",
-          "<strong>Longitude:</strong> ", lon, "<br>",
-          "<strong>Latitude:</strong> ", lat
-        )
+        popup = ~popup_html
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
@@ -1445,13 +1466,7 @@ server = function(input, output, session) {
         fillOpacity = 0.9,
         weight = 1.5,
         group = "Priority Sites for Epidemiological Surveillance",
-        popup = ~ paste0(
-          "<strong>ADM0:</strong> ", ADM0, "<br>",
-          "<strong>ADM1:</strong> ", ADM1, "<br>",
-          "<strong>ADM2:</strong> ", ADM2, "<br>",
-          "<strong>Longitude:</strong> ", lon, "<br>",
-          "<strong>Latitude:</strong> ", lat
-        )
+        popup = ~popup_html
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
