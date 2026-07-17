@@ -794,6 +794,8 @@ rm(Configuration, list = setdiff(ls(pattern = "^db_"), c("db_hcp_per_region", "d
 # ---------------------------------------------------------------------------
 read_sf_sources = function(specs) {
   # Reuse the generic non-cache parallel controls.
+  # ITHAMAPS_PARALLEL_CORES is an optional override: when unset (NA) the
+  # candidates list filters it out and parallel::detectCores() drives the choice.
   parallel_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL", unset = "false")))
   parallel_enabled = parallel_flag %in% c("1", "true", "yes", "on")
   requested_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_PARALLEL_CORES", unset = NA_character_)))
@@ -959,6 +961,8 @@ cache_specs = list(
 
 # Optional startup parallelism for cache (re)generation when cache files are
 # missing/stale/invalid. Cache-hit paths remain fast and mostly unaffected.
+# ITHAMAPS_CACHE_BUILD_CORES is an optional override: when unset (NA) the
+# candidates list filters it out and parallel::detectCores() drives the choice.
 parallel_cache_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL_CACHE_BUILD", unset = "false")))
 parallel_cache_enabled = parallel_cache_flag %in% c("1", "true", "yes", "on")
 requested_cache_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_CACHE_BUILD_CORES", unset = NA_character_)))
@@ -1032,6 +1036,8 @@ load_prediction_assets = function() {
   # raster::stack() objects use external C pointers that do not survive
   # mclapply's fork+exec model. Rasters must always be loaded sequentially in
   # the parent process. Only plain-R objects (CSVs) are safe to parallelize.
+  # ITHAMAPS_PARALLEL_CORES is an optional override: when unset (NA) the
+  # candidates list filters it out and parallel::detectCores() drives the choice.
   parallel_assets_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL", unset = "false")))
   parallel_assets_enabled = parallel_assets_flag %in% c("1", "true", "yes", "on")
   requested_asset_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_PARALLEL_CORES", unset = NA_character_)))

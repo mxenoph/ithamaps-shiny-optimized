@@ -3,8 +3,10 @@ services:
     image: ithamaps-shiny
     container_name: ithamaps-shiny
     restart: unless-stopped
-    # Limit visible/usable CPU capacity by number only (no specific core pinning).
-    cpus: "4.0"
+    # Limit visible/usable CPU capacity by number only (no specific core pinning). The server only has one core
+    # A hard CPU limit is machine-specific and causes error. Without the limit, Docker uses whatever the host has,
+    # and the R code already handles the scale-down
+    #cpus: "4.0"
     ports:
       - "3838:3838"
     extra_hosts:
@@ -16,16 +18,15 @@ services:
       - DB_USER_FILE=/run/secrets/db_user
       - DB_PASSWORD_FILE=/run/secrets/db_password
       # Enable startup parallel cache rebuild in global.R when cache files are
-      # missing/stale/invalid. Set false to force sequential behavior.
+      # missing/stale/invalid. Auto-detects cores — falls back to sequential on
+      # single-core machines, uses parallel on multi-core machines.
       - ITHAMAPS_PARALLEL_CACHE_BUILD=true
-      # Worker cap for startup cache build; effective max is 3 (ADM0/1/2).
-      - ITHAMAPS_CACHE_BUILD_CORES=3
-      # Generic non-cache parallelism toggle/worker cap used by startup tasks
-      # such as prediction asset loading. Keep the worker cap low.
+      # Generic non-cache parallelism toggle. Worker count auto-detected from
+      # available cores and memory; no override needed.
+      # To override, add: ITHAMAPS_CACHE_BUILD_CORES=N and/or
+      # ITHAMAPS_PARALLEL_CORES=N, ITHAMAPS_SF_READ_MAX_WORKERS=N
+      # Omitting them (as here) lets R pick based on detectCores() and /proc/meminfo.
       - ITHAMAPS_PARALLEL=true
-      - ITHAMAPS_PARALLEL_CORES=4
-      - ITHAMAPS_SF_READ_WORKER_MB=2200
-      - ITHAMAPS_SF_READ_MAX_WORKERS=4
     volumes:
       # DEV ONLY: bind-mount the app source so edits (e.g., app.R) are reflected
       # immediately inside the container without rebuilding the image.
