@@ -792,9 +792,78 @@ rm(Configuration, list = setdiff(ls(pattern = "^db_"), c("db_hcp_per_region", "d
 # ---------------------------------------------------------------------------
 # Cache spatial files once at startup (re-used per session in server)
 # ---------------------------------------------------------------------------
-adm0_sf = read_sf("ADM0.gpkg")
-adm1_sf = read_sf("ADM1.gpkg")
-adm2_sf = read_sf("ADM2.gpkg")
+read_sf_sources = function(specs) {
+  # Reuse the generic non-cache parallel controls.
+  parallel_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL", unset = "false")))
+  parallel_enabled = parallel_flag %in% c("1", "true", "yes", "on")
+  requested_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_PARALLEL_CORES", unset = NA_character_)))
+  detected_workers = parallel::detectCores(logical = TRUE)
+
+  # Memory-aware cap for large geometry reads. Defaults are intentionally
+  # conservative for this workload (0.5-1 GB source files).
+  mem_reserve_mb = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_PARALLEL_MEM_RESERVE_MB", unset = "4096")))
+  per_worker_mb = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_SF_READ_WORKER_MB", unset = "2200")))
+  max_workers_cap = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_SF_READ_MAX_WORKERS", unset = "2")))
+
+  # reads system memory info from /proc/meminfo (Linux only) and returns the available memory in MB
+  mem_available_mb = NA_real_
+  mem_line = tryCatch(
+    readLines("/proc/meminfo", warn = FALSE),
+    error = function(e) character(0)
+  )
+  mem_avail_raw = mem_line[grepl("^MemAvailable:", mem_line)]
+  if (length(mem_avail_raw) > 0) {
+    mem_available_mb = as.numeric(gsub("[^0-9]", "", mem_avail_raw[[1]])) / 1024
+  }
+
+  cpu_candidates = c(requested_workers, detected_workers, 1L)
+  cpu_candidates = cpu_candidates[!is.na(cpu_candidates) & cpu_candidates > 0]
+  cpu_workers = cpu_candidates[[1]]
+
+  memory_workers = if (!is.na(mem_available_mb) && !is.na(mem_reserve_mb) && !is.na(per_worker_mb) && per_worker_mb > 0) {
+    max(1L, floor((mem_available_mb - mem_reserve_mb) / per_worker_mb))
+  } else {
+    1L
+  }
+
+  workers = min(length(specs), cpu_workers, memory_workers)
+  if (!is.na(max_workers_cap) && max_workers_cap > 0) {
+    workers = min(workers, max_workers_cap)
+  }
+  workers = max(1L, workers)
+
+  message(sprintf(
+    "[ithamaps] source sf read mode=%s workers=%d (cpu=%s mem_available_mb=%s mem_cap=%d)",
+    if (parallel_enabled) "parallel" else "sequential",
+    if (parallel_enabled) workers else 1L,
+    ifelse(is.na(detected_workers), "NA", as.character(detected_workers)),
+    ifelse(is.na(mem_available_mb), "NA", as.character(round(mem_available_mb, 0))),
+    memory_workers
+  ))
+
+  read_one = function(spec) {
+    list(name = spec$name, value = read_sf(spec$path))
+  }
+
+  results = if (parallel_enabled && workers > 1L) {
+    parallel::mclapply(specs, read_one, mc.cores = workers)
+  } else {
+    lapply(specs, read_one)
+  }
+
+  setNames(lapply(results, `[[`, "value"), vapply(results, `[[`, character(1), "name"))
+}
+
+sf_sources = read_sf_sources(list(
+  list(name = "adm0_sf", path = "ADM0.gpkg"),
+  list(name = "adm1_sf", path = "ADM1.gpkg"),
+  list(name = "adm2_sf", path = "ADM2.gpkg")
+))
+
+adm0_sf = sf_sources[["adm0_sf"]]
+adm1_sf = sf_sources[["adm1_sf"]]
+adm2_sf = sf_sources[["adm2_sf"]]
+rm(sf_sources)
 
 adm0_sel = adm0_sf %>%
   dplyr::select(geo_admin0, name, geom) %>%
@@ -960,9 +1029,9 @@ attach_display_geometry = function(sf_obj) {
 # Ported from IthaMaps-shinyapp/app.R lines 418-426: load prediction rasters,
 # priority sites, and admin lookups once so prediction mode can reuse them.
 load_prediction_assets = function() {
-  # Optional startup parallelism for non-cache tasks. Keep this conservative:
-  # these reads are independent, but loading multiple rasters at once can spike
-  # RAM and disk IO, so the default stays sequential and the worker cap is 2.
+  # raster::stack() objects use external C pointers that do not survive
+  # mclapply's fork+exec model. Rasters must always be loaded sequentially in
+  # the parent process. Only plain-R objects (CSVs) are safe to parallelize.
   parallel_assets_flag = tolower(trimws(Sys.getenv("ITHAMAPS_PARALLEL", unset = "false")))
   parallel_assets_enabled = parallel_assets_flag %in% c("1", "true", "yes", "on")
   requested_asset_workers = suppressWarnings(as.integer(Sys.getenv("ITHAMAPS_PARALLEL_CORES", unset = NA_character_)))
@@ -971,43 +1040,35 @@ load_prediction_assets = function() {
   asset_worker_candidates = asset_worker_candidates[!is.na(asset_worker_candidates) & asset_worker_candidates > 0]
   asset_workers = min(2L, asset_worker_candidates[[1]])
 
-  asset_specs = list(
-    list(name = "Mean_admin", type = "raster", path = file.path("Predictions", "Mean_with_admin.tif")),
-    list(name = "CI95_admin", type = "raster", path = file.path("Predictions", "CI95_with_admin.tif")),
-    list(name = "Burden_admin", type = "raster", path = file.path("Predictions", "Burden_with_admin.tif")),
-    list(name = "Selected_sites", type = "csv", path = file.path("Predictions", "Selected-sites_with_admin.csv")),
-    list(name = "ADM0_lookup", type = "csv", path = file.path("Predictions", "ADM0_lookup.csv")),
-    list(name = "ADM1_lookup", type = "csv", path = file.path("Predictions", "ADM1_lookup.csv")),
-    list(name = "ADM2_lookup", type = "csv", path = file.path("Predictions", "ADM2_lookup.csv"))
+  # Rasters: always sequential (C pointer / fork safety).
+  mean_admin = raster::stack(file.path("Predictions", "Mean_with_admin.tif"))
+  ci95_admin  = raster::stack(file.path("Predictions", "CI95_with_admin.tif"))
+  burden_admin = raster::stack(file.path("Predictions", "Burden_with_admin.tif"))
+
+  # CSVs: safe to parallelize via mclapply (plain-R data frames).
+  csv_specs = list(
+    list(name = "Selected_sites", path = file.path("Predictions", "Selected-sites_with_admin.csv")),
+    list(name = "ADM0_lookup",    path = file.path("Predictions", "ADM0_lookup.csv")),
+    list(name = "ADM1_lookup",    path = file.path("Predictions", "ADM1_lookup.csv")),
+    list(name = "ADM2_lookup",    path = file.path("Predictions", "ADM2_lookup.csv"))
   )
 
-  read_asset_spec = function(spec) {
-    value = if (identical(spec$type, "raster")) {
-      raster::stack(spec$path)
-    } else {
-      read.csv(spec$path)
-    }
-    list(name = spec$name, value = value)
-  }
+  read_csv_spec = function(spec) list(name = spec$name, value = read.csv(spec$path))
 
   message(sprintf(
-    "[ithamaps] prediction asset load mode=%s workers=%d (detected_cores=%s)",
+    "[ithamaps] prediction asset load rasters=sequential csv_mode=%s workers=%d (detected_cores=%s)",
     if (parallel_assets_enabled) "parallel" else "sequential",
     if (parallel_assets_enabled) asset_workers else 1L,
     ifelse(is.na(detected_asset_workers), "NA", as.character(detected_asset_workers))
   ))
 
-  asset_results = if (parallel_assets_enabled && asset_workers > 1L) {
-    parallel::mclapply(asset_specs, read_asset_spec, mc.cores = asset_workers)
+  csv_results = if (parallel_assets_enabled && asset_workers > 1L) {
+    parallel::mclapply(csv_specs, read_csv_spec, mc.cores = asset_workers)
   } else {
-    lapply(asset_specs, read_asset_spec)
+    lapply(csv_specs, read_csv_spec)
   }
 
-  assets = setNames(lapply(asset_results, `[[`, "value"), vapply(asset_results, `[[`, character(1), "name"))
-
-  mean_admin = assets[["Mean_admin"]]
-  ci95_admin = assets[["CI95_admin"]]
-  burden_admin = assets[["Burden_admin"]]
+  assets = setNames(lapply(csv_results, `[[`, "value"), vapply(csv_results, `[[`, character(1), "name"))
 
   mean_raster = mean_admin[["Mean"]]
   ci95_raster = ci95_admin[["CI95"]]
@@ -1025,6 +1086,7 @@ load_prediction_assets = function() {
     CI95 = ci95_raster,
     Burden = burden_raster,
     Selected_sites = assets[["Selected_sites"]] %>%
+
       dplyr::mutate(
         lon = as.numeric(lon),
         lat = as.numeric(lat)

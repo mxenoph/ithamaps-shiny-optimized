@@ -3,6 +3,8 @@ services:
     image: ithamaps-shiny
     container_name: ithamaps-shiny
     restart: unless-stopped
+    # Limit visible/usable CPU capacity by number only (no specific core pinning).
+    cpus: "4.0"
     ports:
       - "3838:3838"
     extra_hosts:
@@ -20,8 +22,10 @@ services:
       - ITHAMAPS_CACHE_BUILD_CORES=3
       # Generic non-cache parallelism toggle/worker cap used by startup tasks
       # such as prediction asset loading. Keep the worker cap low.
-      - ITHAMAPS_PARALLEL=false
-      - ITHAMAPS_PARALLEL_CORES=2
+      - ITHAMAPS_PARALLEL=true
+      - ITHAMAPS_PARALLEL_CORES=4
+      - ITHAMAPS_SF_READ_WORKER_MB=2200
+      - ITHAMAPS_SF_READ_MAX_WORKERS=4
     volumes:
       # DEV ONLY: bind-mount the app source so edits (e.g., app.R) are reflected
       # immediately inside the container without rebuilding the image.
