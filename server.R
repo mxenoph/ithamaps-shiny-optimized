@@ -348,7 +348,7 @@ server = function(input, output, session) {
         div(
           class = "row g-3",
           div(
-            class = "col-md-6",
+            class = "col-12",
             div(
               class = "map-card",
               div(class = "map-title", "Predicted mean carrier prevalence"),
@@ -357,30 +357,21 @@ server = function(input, output, session) {
             )
           ),
           div(
-            class = "col-md-6",
+            class = "col-12",
             div(
               class = "map-card",
               div(class = "map-title", "Prediction uncertainty (95% CI)"),
-              withSpinner(leafletOutput("map_ci95", height = "500px"), type = 3, color = "#0000CC", color.background = "white", caption = "Loading prediction uncertainty raster..."),
-              uiOutput("ci95_legend")
+              withSpinner(leafletOutput("map_ci95_2", height = "500px"), type = 3, color = "#0000CC", color.background = "white", caption = "Loading prediction uncertainty raster..."),
+              uiOutput("ci95_legend_2")
             )
           ),
           div(
-            class = "col-md-6",
+            class = "col-12",
             div(
               class = "map-card",
               div(class = "map-title", "Estimated number of carriers"),
               withSpinner(leafletOutput("map_burden", height = "500px"), type = 3, color = "#0000CC", color.background = "white", caption = "Loading estimated number of carriers raster..."),
               uiOutput("burden_legend")
-            )
-          ),
-          div(
-            class = "col-md-6",
-            div(
-              class = "map-card",
-              div(class = "map-title", "Prediction uncertainty (95% CI) with priority sites for future epidemiological studies"),
-              withSpinner(leafletOutput("map_ci95_2", height = "500px"), type = 3, color = "#0000CC", color.background = "white", caption = "Loading prediction uncertainty raster with priority sites..."),
-              uiOutput("ci95_legend_2")
             )
           )
         ),
@@ -1042,7 +1033,7 @@ server = function(input, output, session) {
 
   # Ported from IthaMaps-shinyapp/app.R lines 513-722: build prediction-mode
   # legends, synchronized map behaviour, and click-based raster interrogation.
-  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95', 'map_burden', 'map_ci95_2']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
+  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});});} initialiseSync();}"
 
   cluster_hover_js = function(default_fill, default_stroke) {
     paste(
@@ -1287,7 +1278,7 @@ server = function(input, output, session) {
     values = extract_prediction_values(click$lng, click$lat)
     selected_prediction_point(values)
 
-    invisible(lapply(c("map_mean", "map_ci95", "map_burden", "map_ci95_2"), function(map_id) {
+    invisible(lapply(c("map_mean", "map_ci95_2", "map_burden"), function(map_id) {
       leafletProxy(map_id) %>%
         clearGroup("selected_point") %>%
         addCircleMarkers(
@@ -1341,12 +1332,6 @@ server = function(input, output, session) {
     prediction_legend_bar(rev(assets$Mean_colours), "Predicted mean carrier prevalence (%)", assets$Mean_min, assets$Mean_max)
   })
 
-  output$ci95_legend = renderUI({
-    req(is_prediction_mode())
-    assets = prediction_data_r()
-    prediction_legend_bar(rev(assets$CI95_colours), "Prediction uncertainty (95% Credible Interval)", assets$CI95_min, assets$CI95_max)
-  })
-
   output$burden_legend = renderUI({
     req(is_prediction_mode())
     assets = prediction_data_r()
@@ -1392,23 +1377,25 @@ server = function(input, output, session) {
     req(is_prediction_mode())
     assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
-      # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
       setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$Mean, colors = assets$Mean_palette, opacity = 0.8, project = TRUE) %>%
-      htmlwidgets::onRender(sync_js)
-  })
-
-  output$map_ci95 = renderLeaflet({
-    req(is_prediction_mode())
-    assets = prediction_data_r()
-    leaflet(options = prediction_leaflet_options) %>%
-      # options no_wrap stops conntinuous raster images from wrapping around the globe
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
-      addScaleBar(position = "bottomleft") %>%
-      setView(lng = 80, lat = 30, zoom = 4) %>%
-      addRasterImage(assets$CI95, colors = assets$CI95_palette, opacity = 0.8, project = TRUE) %>%
+      addCircleMarkers(
+        data = assets$Selected_sites,
+        lng = ~lon, lat = ~lat,
+        radius = 5, color = "white", fillColor = "black",
+        fillOpacity = 0.9, weight = 1.5,
+        group = "Priority Sites for Epidemiological Surveillance",
+        popup = ~ paste0(
+          "<strong>ADM0:</strong> ", ADM0, "<br>",
+          "<strong>ADM1:</strong> ", ADM1, "<br>",
+          "<strong>ADM2:</strong> ", ADM2, "<br>",
+          "<strong>Longitude:</strong> ", lon, "<br>",
+          "<strong>Latitude:</strong> ", lat
+        )
+      ) %>%
+      addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1416,12 +1403,25 @@ server = function(input, output, session) {
     req(is_prediction_mode())
     assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
-      # leaflet(width = 1300, height = 750, options = leafletOptions(worldCopyJump = FALSE, minZoom = 2)) %>%
-      # options no_wrap stops conntinuous raster images from wrapping around the globe
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
       setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$Burden, colors = assets$Burden_palette, opacity = 0.8, project = TRUE) %>%
+      addCircleMarkers(
+        data = assets$Selected_sites,
+        lng = ~lon, lat = ~lat,
+        radius = 5, color = "white", fillColor = "black",
+        fillOpacity = 0.9, weight = 1.5,
+        group = "Priority Sites for Epidemiological Surveillance",
+        popup = ~ paste0(
+          "<strong>ADM0:</strong> ", ADM0, "<br>",
+          "<strong>ADM1:</strong> ", ADM1, "<br>",
+          "<strong>ADM2:</strong> ", ADM2, "<br>",
+          "<strong>Longitude:</strong> ", lon, "<br>",
+          "<strong>Latitude:</strong> ", lat
+        )
+      ) %>%
+      addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1444,7 +1444,7 @@ server = function(input, output, session) {
         fillColor = "black",
         fillOpacity = 0.9,
         weight = 1.5,
-        group = "Priority sites",
+        group = "Priority Sites for Epidemiological Surveillance",
         popup = ~ paste0(
           "<strong>ADM0:</strong> ", ADM0, "<br>",
           "<strong>ADM1:</strong> ", ADM1, "<br>",
@@ -1453,7 +1453,7 @@ server = function(input, output, session) {
           "<strong>Latitude:</strong> ", lat
         )
       ) %>%
-      addLayersControl(overlayGroups = c("Priority sites"), options = layersControlOptions(collapsed = FALSE)) %>%
+      addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1461,13 +1461,9 @@ server = function(input, output, session) {
     req(is_prediction_mode())
     update_selected_prediction_point(input$map_mean_click)
   })
-  observeEvent(input$map_ci95_click, {
+  observeEvent(input$map_mean_marker_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_ci95_click)
-  })
-  observeEvent(input$map_burden_click, {
-    req(is_prediction_mode())
-    update_selected_prediction_point(input$map_burden_click)
+    update_selected_prediction_point(input$map_mean_marker_click)
   })
   observeEvent(input$map_ci95_2_click, {
     req(is_prediction_mode())
@@ -1476,6 +1472,14 @@ server = function(input, output, session) {
   observeEvent(input$map_ci95_2_marker_click, {
     req(is_prediction_mode())
     update_selected_prediction_point(input$map_ci95_2_marker_click)
+  })
+  observeEvent(input$map_burden_click, {
+    req(is_prediction_mode())
+    update_selected_prediction_point(input$map_burden_click)
+  })
+  observeEvent(input$map_burden_marker_click, {
+    req(is_prediction_mode())
+    update_selected_prediction_point(input$map_burden_marker_click)
   })
 
   output$map = renderLeaflet({
@@ -2082,21 +2086,23 @@ server = function(input, output, session) {
         if (is.null(ci95_crop) || all(is.na(ci95_crop[]))) ci95_crop = assets$CI95
         if (is.null(burden_crop) || all(is.na(burden_crop[]))) burden_crop = assets$Burden
 
-        png(filename = file, width = 1800, height = 1800, res = 150)
-        par(mfrow = c(2, 2), mar = c(4, 4, 4, 5))
-        raster::plot(mean_crop, col = rev(assets$Mean_colours), main = "Predicted carrier prevalence (%)", axes = TRUE, box = TRUE)
-        raster::plot(ci95_crop, col = rev(assets$CI95_colours), main = "Prediction uncertainty (95% Credible Interval)", axes = TRUE, box = TRUE)
-        raster::plot(burden_crop, col = rev(assets$Burden_colours), main = "Estimated number of carriers", axes = TRUE, box = TRUE)
-        raster::plot(ci95_crop, col = rev(assets$CI95_colours), main = "Prediction uncertainty with priority sites", axes = TRUE, box = TRUE)
-
-        selected_sites_export = assets$Selected_sites %>%
+        # Priority sites filtered to current viewport extent, overlaid on all three panels.
+        sites_export = assets$Selected_sites %>%
           dplyr::filter(
             lon >= raster::xmin(ci95_crop),
             lon <= raster::xmax(ci95_crop),
             lat >= raster::ymin(ci95_crop),
             lat <= raster::ymax(ci95_crop)
           )
-        points(selected_sites_export$lon, selected_sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
+
+        png(filename = file, width = 1800, height = 2700, res = 150)
+        par(mfrow = c(3, 1), mar = c(4, 4, 4, 5))
+        raster::plot(mean_crop, col = rev(assets$Mean_colours), main = "Predicted carrier prevalence (%)", axes = TRUE, box = TRUE)
+        points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
+        raster::plot(ci95_crop, col = rev(assets$CI95_colours), main = "Prediction uncertainty (95% Credible Interval)", axes = TRUE, box = TRUE)
+        points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
+        raster::plot(burden_crop, col = rev(assets$Burden_colours), main = "Estimated number of carriers", axes = TRUE, box = TRUE)
+        points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
         dev.off()
         return(invisible(NULL))
       }
