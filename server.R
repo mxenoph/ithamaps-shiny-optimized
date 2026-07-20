@@ -1389,22 +1389,8 @@ server = function(input, output, session) {
         HTML("<strong>Tip:</strong> Click any map to display the mean predicted carrier prevalence, prediction uncertainty, and estimated number of carriers at the selected location.")
       ))
     }
-    mean_value = ifelse(is.na(values$Mean), "No data", round(values$Mean, 4))
-    ci95_value = ifelse(is.na(values$CI95), "No data", round(values$CI95, 4))
-    burden_value = ifelse(is.na(values$Burden), "No data", round(values$Burden, 4))
     tagList(
       disclaimer,
-      HTML(paste0(
-        "<h5 style='margin-bottom: 8px;'>Data at selected coordinates</h5><table class='value-table'>",
-        "<tr><td>Longitude</td><td>", round(values$Longitude, 5), "</td></tr>",
-        "<tr><td>Latitude</td><td>", round(values$Latitude, 5), "</td></tr>",
-        "<tr><td>ADM0</td><td>", values$ADM0, "</td></tr>",
-        "<tr><td>ADM1</td><td>", values$ADM1, "</td></tr>",
-        "<tr><td>ADM2</td><td>", values$ADM2, "</td></tr>",
-        "<tr><td>Mean predicted carrier prevalence</td><td>", mean_value, "</td></tr>",
-        "<tr><td>Prediction uncertainty (95% CI)</td><td>", ci95_value, "</td></tr>",
-        "<tr><td>Estimated number of carriers</td><td>", burden_value, "</td></tr></table>"
-      ))
     )
   })
 
