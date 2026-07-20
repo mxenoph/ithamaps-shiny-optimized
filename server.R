@@ -1279,8 +1279,10 @@ server = function(input, output, session) {
     )
   }
 
-  update_selected_prediction_point = function(click) {
+  update_selected_prediction_point = function(click, from_priority_site = FALSE) {
     req(click$lng, click$lat)
+    selected_point_color = if (from_priority_site) "#0000CC" else "#FFD400"
+
     values = extract_prediction_values(click$lng, click$lat)
     selected_prediction_point(values)
 
@@ -1313,8 +1315,8 @@ server = function(input, output, session) {
           lng = click$lng,
           lat = click$lat,
           radius = 7,
-          color = "#0000CC",
-          fillColor = "#0000CC",
+          color = selected_point_color,
+          fillColor = selected_point_color,
           fillOpacity = 1,
           weight = 2,
           group = "selected_point"
@@ -1419,8 +1421,7 @@ server = function(input, output, session) {
         lng = ~lon, lat = ~lat,
         radius = 5, color = "white", fillColor = "black",
         fillOpacity = 0.9, weight = 1.5,
-        group = "Priority Sites for Epidemiological Surveillance",
-        popup = ~popup_html
+        group = "Priority Sites for Epidemiological Surveillance"
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
@@ -1439,8 +1440,7 @@ server = function(input, output, session) {
         lng = ~lon, lat = ~lat,
         radius = 5, color = "white", fillColor = "black",
         fillOpacity = 0.9, weight = 1.5,
-        group = "Priority Sites for Epidemiological Surveillance",
-        popup = ~popup_html
+        group = "Priority Sites for Epidemiological Surveillance"
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
@@ -1465,36 +1465,62 @@ server = function(input, output, session) {
         fillColor = "black",
         fillOpacity = 0.9,
         weight = 1.5,
-        group = "Priority Sites for Epidemiological Surveillance",
-        popup = ~popup_html
+        group = "Priority Sites for Epidemiological Surveillance"
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
       htmlwidgets::onRender(sync_js)
   })
 
+  last_prediction_marker_click = reactiveVal(NULL)
+  is_recent_same_prediction_marker_click = function(click, window_secs = 1, tol = 1e-7) {
+    marker_click = last_prediction_marker_click()
+    if (is.null(marker_click) || is.null(click$lng) || is.null(click$lat)) {
+      return(FALSE)
+    }
+    is_recent = as.numeric(difftime(Sys.time(), marker_click$ts, units = "secs")) <= window_secs
+    same_lng = abs(click$lng - marker_click$lng) <= tol
+    same_lat = abs(click$lat - marker_click$lat) <= tol
+    is_recent && same_lng && same_lat
+  }
+
+  handle_prediction_marker_click = function(click) {
+    req(click$lng, click$lat)
+    last_prediction_marker_click(list(lng = click$lng, lat = click$lat, ts = Sys.time()))
+    update_selected_prediction_point(click, from_priority_site = TRUE)
+  }
+
   observeEvent(input$map_mean_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_mean_click)
+    if (is_recent_same_prediction_marker_click(input$map_mean_click)) {
+      return()
+    }
+    update_selected_prediction_point(input$map_mean_click, from_priority_site = FALSE)
   })
   observeEvent(input$map_mean_marker_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_mean_marker_click)
+    handle_prediction_marker_click(input$map_mean_marker_click)
   })
   observeEvent(input$map_ci95_2_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_ci95_2_click)
+    if (is_recent_same_prediction_marker_click(input$map_ci95_2_click)) {
+      return()
+    }
+    update_selected_prediction_point(input$map_ci95_2_click, from_priority_site = FALSE)
   })
   observeEvent(input$map_ci95_2_marker_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_ci95_2_marker_click)
+    handle_prediction_marker_click(input$map_ci95_2_marker_click)
   })
   observeEvent(input$map_burden_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_burden_click)
+    if (is_recent_same_prediction_marker_click(input$map_burden_click)) {
+      return()
+    }
+    update_selected_prediction_point(input$map_burden_click, from_priority_site = FALSE)
   })
   observeEvent(input$map_burden_marker_click, {
     req(is_prediction_mode())
-    update_selected_prediction_point(input$map_burden_marker_click)
+    handle_prediction_marker_click(input$map_burden_marker_click)
   })
 
   output$map = renderLeaflet({
@@ -2110,13 +2136,53 @@ server = function(input, output, session) {
             lat <= raster::ymax(ci95_crop)
           )
 
+        # Prepare grey country background for the current extent, matching the
+        # curated-data export (fill = grey88, border = grey60). Countries outside
+        # the prediction model (NA raster cells) will be visibly greyed out rather
+        # than appearing as transparent/white.
+        # Disable s2 spherical geometry for the crop (same pattern as curated export).
+        prev_s2_pred = sf::sf_use_s2()
+        suppressMessages(sf::sf_use_s2(FALSE))
+        raster_ext = raster::extent(mean_crop)
+        adm0_bg = suppressWarnings(tryCatch(
+          sf::st_crop(adm0_sel, sf::st_bbox(c(
+            xmin = raster_ext@xmin, xmax = raster_ext@xmax,
+            ymin = raster_ext@ymin, ymax = raster_ext@ymax
+          ), crs = sf::st_crs(adm0_sel))),
+          error = function(e) adm0_sel
+        ))
+        suppressMessages(sf::sf_use_s2(prev_s2_pred))
+        adm0_bg_geom = sf::st_geometry(adm0_bg)
+
+        # Pre-compute label positions once (centroid per country, same as curated export).
+        adm0_label_pts = suppressWarnings(sf::st_point_on_surface(adm0_bg_geom))
+        adm0_label_coords = sf::st_coordinates(adm0_label_pts)
+        adm0_label_names = adm0_bg$Region
+
+        # Helper: grey background → raster → borders → country names → sites
+        plot_pred_panel = function(raster_data, colours, title) {
+          plot(adm0_bg_geom,
+               col    = "grey88",
+               border = "grey60",
+               lwd    = 0.3,
+               xlim   = c(raster_ext@xmin, raster_ext@xmax),
+               ylim   = c(raster_ext@ymin, raster_ext@ymax),
+               main   = title,
+               axes   = TRUE)
+          raster::plot(raster_data, col = colours, add = TRUE, legend = TRUE)
+          plot(adm0_bg_geom, col = NA, border = "grey60", lwd = 0.3, add = TRUE)
+          text(adm0_label_coords[, 1], adm0_label_coords[, 2],
+               labels = adm0_label_names,
+               cex = 0.45, col = "grey35")
+        }
+
         png(filename = file, width = 1800, height = 2700, res = 150)
         par(mfrow = c(3, 1), mar = c(4, 4, 4, 5))
-        raster::plot(mean_crop, col = rev(assets$Mean_colours), main = "Predicted carrier prevalence (%)", axes = TRUE, box = TRUE)
+        plot_pred_panel(mean_crop,   rev(assets$Mean_colours),   "Predicted carrier prevalence (%)")
         points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
-        raster::plot(ci95_crop, col = rev(assets$CI95_colours), main = "Prediction uncertainty (95% Credible Interval)", axes = TRUE, box = TRUE)
+        plot_pred_panel(ci95_crop,   rev(assets$CI95_colours),   "Prediction uncertainty (95% Credible Interval)")
         points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
-        raster::plot(burden_crop, col = rev(assets$Burden_colours), main = "Estimated number of carriers", axes = TRUE, box = TRUE)
+        plot_pred_panel(burden_crop, rev(assets$Burden_colours), "Estimated number of carriers")
         points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
         dev.off()
         return(invisible(NULL))
