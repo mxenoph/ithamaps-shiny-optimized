@@ -24,6 +24,7 @@
 library(DT)
 library(sf)
 library(dplyr)
+library(tidyr)
 library(bslib)
 library(shiny)
 library(readxl)
@@ -159,6 +160,97 @@ open_mariadb_connection = function(dbname, cfg) {
   )
 }
 
+parse_set_column_levels = function(column_type) {
+  # Parse MariaDB/MySQL COLUMN_TYPE strings like: set('A','B','C')
+  matches = regmatches(
+    column_type,
+    gregexpr("'((?:''|[^'])*)'", column_type, perl = TRUE)
+  )[[1]]
+  if (length(matches) == 0 || (length(matches) == 1 && identical(matches[[1]], ""))) {
+    return(character())
+  }
+  levels = gsub("^'|'$", "", matches)
+  gsub("''", "'", levels, fixed = TRUE)
+}
+
+get_set_column_options = function(con, dbname, table_names) {
+  if (length(table_names) == 0) {
+    return(list())
+  }
+
+  quoted_tables = paste(DBI::dbQuoteString(con, table_names), collapse = ",")
+  quoted_db = DBI::dbQuoteString(con, dbname)
+  sql = paste0(
+    "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE ",
+    "FROM information_schema.COLUMNS ",
+    "WHERE TABLE_SCHEMA = ", quoted_db, " ",
+    "AND TABLE_NAME IN (", quoted_tables, ") ",
+    "AND DATA_TYPE = 'set'"
+  )
+
+  info = DBI::dbGetQuery(con, sql)
+  if (nrow(info) == 0) {
+    return(list())
+  }
+
+  names(info) = tolower(names(info))
+  by_table = split(info, info$table_name)
+  lapply(by_table, function(tbl) {
+    stats::setNames(
+      lapply(tbl$column_type, parse_set_column_levels),
+      tbl$column_name
+    )
+  })
+}
+
+apply_set_factors = function(df, table_options) {
+  out = df
+
+  for (col_name in names(table_options)) {
+    if (!(col_name %in% names(out))) {
+      next
+    }
+    levels = table_options[[col_name]]
+    values = as.character(out[[col_name]])
+    if (any(!is.na(values) & values == "")) {
+      levels = unique(c(levels, ""))
+    }
+    # Preserve unexpected concrete values (e.g. combined SET payloads) rather
+    # than coercing them to NA; schema-declared levels remain first.
+    observed = unique(values[!is.na(values)])
+    extras = setdiff(observed, levels)
+    if (length(extras) > 0) {
+      levels = c(levels, extras)
+    }
+    out[[col_name]] = factor(values, levels = levels)
+  }
+
+  out
+}
+
+add_explicit_na_level = function(x, na_level = "Unspecified") {
+  if (!is.factor(x)) {
+    return(x)
+  }
+  lvls = levels(x)
+  if (!(na_level %in% lvls)) {
+    levels(x) = c(lvls, na_level)
+  }
+  x[is.na(x)] = na_level
+  x
+}
+
+read_table_with_set_factors = function(con, table_name, set_options_by_table) {
+  out = dbReadTable(con, table_name) %>% as_tibble()
+  table_options = set_options_by_table[[table_name]]
+  if (is.null(table_options) || length(table_options) == 0) {
+    return(out)
+  }
+
+  # Convert SET columns post-read, so table ingestion remains dataframe-first.
+  apply_set_factors(out, table_options)
+}
+
 # Connection to ITHANET
 Ithanet = open_mariadb_connection(ithanet_dbname, Configuration)
 
@@ -188,9 +280,11 @@ Datatables = Datatables[Datatables %in% c(
   "ithagenes_globin_phen"
 )]
 
+set_options = get_set_column_options(Ithanet, ithanet_dbname, Datatables)
+
 list2env(
   setNames(
-    lapply(Datatables, function(Data) dbReadTable(Ithanet, Data) %>% as_tibble()),
+    lapply(Datatables, function(Data) read_table_with_set_factors(Ithanet, Data, set_options)),
     paste0("db_", Datatables)
   ),
   envir = .GlobalEnv
@@ -198,7 +292,7 @@ list2env(
 
 dbDisconnect(Ithanet)
 
-rm(Ithanet, Datatables)
+rm(Ithanet, Datatables, set_options)
 
 # Connection to joomla
 Joomla = open_mariadb_connection(joomla_dbname, Configuration)
@@ -206,9 +300,11 @@ Joomla = open_mariadb_connection(joomla_dbname, Configuration)
 Datatables = dbListTables(Joomla)
 Datatables = Datatables[Datatables %in% c("itha_experts")]
 
+set_options = get_set_column_options(Joomla, joomla_dbname, Datatables)
+
 list2env(
   setNames(
-    lapply(Datatables, function(Data) dbReadTable(Joomla, Data) %>% as_tibble()),
+    lapply(Datatables, function(Data) read_table_with_set_factors(Joomla, Data, set_options)),
     paste0("db_", Datatables)
   ),
   envir = .GlobalEnv
@@ -216,7 +312,7 @@ list2env(
 
 dbDisconnect(Joomla)
 
-rm(Joomla, Datatables)
+rm(Joomla, Datatables, set_options)
 
 # ---------------------------------------------------------------------------
 # Join diagnostics: export and silence expected many-to-many joins
@@ -474,79 +570,94 @@ Note_function2 = function(end_year_assumed, region_comment, compensation_comment
   if (length(parts) > 0) paste(parts, collapse = ", ") else "None"
 }
 
+hcp_per_region_vanilla = db_hcp_per_region
+availability_levels = expand_grid(
+  l1 = str_to_lower(levels(hcp_per_region_vanilla$eligibility)),
+  l2 = str_to_lower(levels(hcp_per_region_vanilla$coverage))
+) %>%
+  mutate(
+    l1 = case_when(l1 == "unavailable" ~ l1,
+                   l1 == "unclear" ~ "unavailable",
+      TRUE ~"available"),
+    # Optional: adjust factor levels if "universal" should also be "available" in level definitions
+    l2 = case_when(l2 == "universal" ~"national", 
+                   l2 == "unclear" ~ NA,
+                   TRUE ~l2),
+    combo_level = str_to_title(str_c(l1, " (", l2, ")"))
+  ) %>%
+  distinct(combo_level) %>%
+  pull(combo_level)
+
+# check in sql:
+# SELECT * FROM `hcp_per_region` AS h LEFT JOIN regions AS r ON r.regions_id = h.regions_id LEFT JOIN country AS c ON r.country_id = c.idCountry WHERE h.hcp_id =14 AND c.continentName = "Europe";
 db_hcp_per_region = db_hcp_per_region %>%
+  #filter(hcp_entry_id %in% c(459, 457, 771, 463, 461, 921, 925, 926, 460)) %>%
   rename("source_id" = source) %>%
-  left_join(db_regions, by = "regions_id") %>%
+  left_join(db_regions %>% select(-c(created, updated)), by = "regions_id") %>%
   left_join(db_cause, by = "cause_id") %>%
   left_join(db_ithamaps_accumulated_sources %>%
-    rename("ihme_id" = expert), by = "source_id") %>%
+    rename("ihme_id" = expert) %>%
+    select(-c(created, updated)), by = "source_id") %>%
   left_join(db_ithamaps_log %>%
+    filter(!is.na(hcp_entry_id)) %>%
     rename("expert_id" = curated_by) %>%
-    select(hcp_entry_id, expert_id), by = "hcp_entry_id") %>%
-  left_join(db_itha_experts %>%
-    rename("expert_id" = id) %>%
-    mutate(curated_by = paste0(name, " ", surname)) %>%
-    select(expert_id, curated_by), by = "expert_id") %>%
+    left_join(db_itha_experts %>%
+      rename("expert_id" = id) %>%
+      mutate(curated_by = paste0(name, " ", surname)) %>%
+      select(expert_id, curated_by), by = "expert_id") %>%
+    # this could be a source of duplicate values as in the log table there are
+    # entries for add and edit on the hcp entries
+    group_by(hcp_entry_id) %>%
+    mutate(curated_by = replace_na(''), 
+           curated_by = str_c(unique(curated_by), collapse =",")) %>% 
+    # handling the case where we might have added data programmatically and did 
+    # not add curator so the NA values are reated as distinct and introduce dups
+    filter(!is.na(expert_id)) %>%
+    distinct() %>%
+    select(hcp_entry_id, expert_id, curated_by), by = "hcp_entry_id") %>%
   left_join(db_itha_experts %>%
     rename("ihme_id" = id) %>%
     mutate(expert = name) %>%
     select(ihme_id, expert), by = "ihme_id") %>%
   left_join(db_hc_policies %>%
     select(hcp_id, hcp_name, ancestor0) %>%
-    rename("hcp_id0" = ancestor0), by = "hcp_id") %>%
+    rename("ancestor0_hcp_id" = ancestor0), by = "hcp_id") %>%
   left_join(db_hc_policies %>%
-    rename(
-      "hcp_id0" = hcp_id,
-      "hcp_name_ancestor" = hcp_name
-    ) %>%
-    select(hcp_id0, hcp_name_ancestor), by = "hcp_id0") %>%
+    filter(is.na(ancestor0)) %>%
+    select(hcp_id, hcp_name) %>%
+    rename(ancestor0_hcp_id = hcp_id, 
+           hcp_name_ancestor = hcp_name), 
+    by = "ancestor0_hcp_id") %>%
   left_join(db_country %>%
     rename("country_id" = idCountry) %>%
     select(country_id, countryName, continentName), by = "country_id") %>%
   rename("Country" = countryName) %>%
   select(
     -regions_id, -cause_id, -primary_ontology, -secondary_ontology,
-    -expert_id, -hcp_id, -hcp_id0, -created.x, -updated.x,
-    -created.y, -updated.y, -ihme_id, -country_id
+    -expert_id, -hcp_id, -ihme_id, -country_id
   ) %>%
   mutate(
     longitude = as.character(longitude),
     latitude = as.character(latitude)
   ) %>%
+  # Some DB SET columns are factors; make NA explicit first so downstream
+  # replacements do not accidentally coerce factor labels to integer codes.
+  mutate(across(where(is.factor), ~ add_explicit_na_level(.x, "Unspecified"))) %>%
   mutate(
     end_year_assumed = ifelse(end_year_assumed == 1, "End year of study period based on study's publication year", NA),
-    timeframe = ifelse(!is.na(start_year) & !is.na(end_year), paste0(start_year, "-", end_year),
-      ifelse(is.na(start_year) & !is.na(end_year), paste0("up to ", end_year),
-        ifelse(!is.na(start_year) & is.na(end_year), paste0("from ", start_year), "Unspecified")
-      )
-    ),
-    eligibility = ifelse(is.na(eligibility), "Unspecified", eligibility),
-    eligibility_comment = ifelse(is.na(eligibility_comment), "Unspecified", eligibility_comment),
-    recruitment_site = ifelse(is.na(recruitment_site), "Unspecified", recruitment_site),
-    uptake = ifelse(is.na(uptake), "Unspecified", uptake),
-    implementation = ifelse(is.na(implementation), "Unspecified",
-      ifelse(implementation == "policy", "Policy",
-        ifelse(implementation == "pilot", "Pilot",
-          ifelse(implementation == "service", "Service", "Unspecified")
-        )
-      )
-    ),
-    diagnostic_method = ifelse(hcp_name_ancestor %in% c(
-      "Newborn screening (aims to establish disease in a baby shortly after birth)",
-      "Prevention strategy (aims to reduce birth of new affected individuals)",
-      "Prenatal genetic diagnosis (aims to establish the presence of disease in a fetus)"
-    ) & is.na(diagnostic_method), "Unspecified",
-    ifelse(!(hcp_name_ancestor %in% c(
-      "Newborn screening (aims to establish disease in a baby shortly after birth)",
-      "Prevention strategy (aims to reduce birth of new affected individuals)",
-      "Prenatal genetic diagnosis (aims to establish the presence of disease in a fetus)"
-    )) & is.na(diagnostic_method), "Not applicable",
-    ifelse(!(hcp_name_ancestor %in% c(
-      "Newborn screening (aims to establish disease in a baby shortly after birth)",
-      "Prevention strategy (aims to reduce birth of new affected individuals)",
-      "Prenatal genetic diagnosis (aims to establish the presence of disease in a fetus)"
-    )) & !is.na(diagnostic_method), "Not applicable", diagnostic_method)
-    )
+    timeframe = case_when(!is.na(start_year) & !is.na(end_year) ~str_c(start_year, "-", end_year), 
+                          is.na(start_year) & !is.na(end_year) ~str_c("up to ", end_year), 
+                          !is.na(start_year) & is.na(end_year) ~str_c("from ", start_year),
+                          TRUE ~"Unspecified"),
+    uptake = as.character(uptake),
+    uptake = replace_na(uptake, "Unspecified"),
+    #implementation = str_to_title(implementation),
+    diagnostic_method = case_when(
+      # these are entries on newborn screening, prevention strategy and prenatal genetic diagnosis, for which diagnostic method is applicable but have no data, so we set it to "Unspecified"
+      ancestor0_hcp_id %in% c(1,2,3) & is.na(diagnostic_method) ~ "Unspecified",
+      # even if there are data for diagnostic method by mistake in curation, if the entry is not on newborn screening, prevention strategy or prenatal genetic diagnosis, we set it to "Not applicable"
+      !ancestor0_hcp_id %in% c(1,2,3) & is.na(diagnostic_method) ~ "Not applicable",
+      TRUE ~ diagnostic_method
     )
   ) %>%
   rowwise() %>%
@@ -554,44 +665,58 @@ db_hcp_per_region = db_hcp_per_region %>%
   ungroup() %>%
   # Ported from IthaMaps-shinyapp/app.R lines 270-278: synthesize
   # healthcare availability and coverage labels before grouped harmonization.
+  #mutate(
+  #  coverage = ifelse(coverage == "Universal", "National",
+  #    ifelse(coverage == "Unclear", "NULL", coverage)
+  #  )
+  #) %>%
+  #commenting out as this is potentially a residue from curation pipeline and not needed for the shiny app
+  #mutate(across(everything(), ~ {
+  #  value_chr = as.character(.)
+  #  ifelse(value_chr == ":", "NULL", value_chr)
+  #})) %>%
+  #mutate(across(everything(), ~ {
+  #  value_chr = as.character(.)
+  #  ifelse(is.na(value_chr), "NULL", value_chr)
+  #})) %>%
   mutate(
-    coverage = ifelse(coverage == "Universal", "National",
-      ifelse(coverage == "Unclear", "NULL", coverage)
-    )
-  ) %>%
-  mutate(across(everything(), ~ {
-    value_chr = as.character(.)
-    ifelse(value_chr == ":", "NULL", value_chr)
-  })) %>%
-  mutate(across(everything(), ~ {
-    value_chr = as.character(.)
-    ifelse(is.na(value_chr), "NULL", value_chr)
-  })) %>%
-  mutate(
-    availability = ifelse(eligibility == "Unavailable", "Unavailable",
-      ifelse(eligibility == "NULL", "NULL", "Available")
+    availability = dplyr::case_when(
+      eligibility == "Unavailable" ~ "Unavailable",
+      eligibility == "NULL" | is.na(coverage) | coverage == "Unclear" ~ NA_character_,
+      coverage == "Regional" ~ "Available (Regionally)",
+      coverage == "Universal" ~ "Available (Nationally)",
+      TRUE ~ NA_character_
     ),
-    eligibility = ifelse(eligibility == "Unavailable", "NULL", eligibility)
-  ) %>%
-  filter(availability != "NULL") %>%
-  filter(coverage != "NULL") %>%
-  mutate(
-    Availability = ifelse(availability == "Available" & coverage == "Regional", "Available (Regionally)",
-      ifelse(availability == "Available" & coverage == "National", "Available (Nationally)",
-        ifelse(availability == "Unavailable", "Unavailable", "NULL")
-      )
+    availability = factor(
+      availability,
+      levels = c("Available (Nationally)", "Available (Regionally)", "Unavailable")
     )
   ) %>%
+  filter(!is.na(availability)) %>%
   mutate(
     compensation = gsub("and", "&", compensation),
     compensation = gsub(",", " &", compensation),
     compensation = ifelse(compensation_comment != "NULL", paste0(compensation, " (", compensation_comment, ")"), compensation)
   ) %>%
-  select(
-    -comments, -curated_by, -expert, -source_id, -pmid, -report, -doi, -hc_key,
-    -end_year_assumed, -region_comment, -admin0, -admin1, -admin2, -admin3
-  ) %>%
+  select(-any_of(c(
+    "comments", "curated_by", "expert", "source_id", "pmid", "report", "doi", "hc_key",
+    "end_year_assumed", "region_comment", "admin0", "admin1", "admin2", "admin3"
+  ))) %>%
   distinct()
+
+# Preserve healthcare availability options as factor levels from the full
+# source data so downstream subsets/legends can show all options even when one
+# option has zero rows for a given query.
+hcp_availability_levels = if (is.factor(db_hcp_per_region$availability)) {
+  levels(db_hcp_per_region$availability)
+} else {
+  db_hcp_per_region %>%
+    dplyr::pull(availability) %>%
+    as.character() %>%
+    unique() %>%
+    stats::na.omit() %>%
+    as.character()
+}
 
 rm(Note_function, Note_function2)
 
@@ -1298,7 +1423,15 @@ Search = function(Item, Identifier, Data) {
 # (Parse, Extract, Search are defined above and used per-session in server)
 
 query_bundle_cache = new.env(parent = emptyenv())
-query_bundle_cache_version = "timings_v2"
+query_bundle_cache_version = "timings_v3_debug"
+
+ithamaps_debug_mode = tolower(trimws(Sys.getenv("ITHAMAPS_DEBUG_MODE", unset = "false"))) %in% c("1", "true", "yes", "on")
+query_bundle_debug_store = new.env(parent = emptyenv())
+query_bundle_debug_counter = 0L
+
+debug_bundle_enabled = function() {
+  isTRUE(ithamaps_debug_mode)
+}
 
 normalize_query_string = function(raw_qs) {
   if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
@@ -1455,10 +1588,30 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
 
 # Ported from IthaMaps-shinyapp/app.R lines 1430-1504: harmonize healthcare
 # availability outputs, timeframe labels, application mode, and references.
-harmonize_healthcare_subset = function(data) {
+harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
+  debug_steps = list()
+  debug_capture = function(label, value) {
+    if (!isTRUE(debug_mode)) {
+      return(invisible(NULL))
+    }
+    debug_steps[[length(debug_steps) + 1L]] <<- list(label = label, value = value)
+    invisible(NULL)
+  }
+
   if (is.null(data) || nrow(data) == 0) {
+    debug_capture("input_empty", data)
+    if (isTRUE(debug_mode)) {
+      return(list(result = data, steps = debug_steps))
+    }
     return(data)
   }
+
+  availability_levels = if (is.factor(data$availability)) {
+    levels(data$availability)
+  } else {
+    unique(as.character(data$availability))
+  }
+  debug_capture("input", data)
 
   compensation_sources = function(comment) {
     comment = gsub("\\s*\\(.*?\\)$", "", comment)
@@ -1467,14 +1620,24 @@ harmonize_healthcare_subset = function(data) {
     strsplit(comment, "\\s*&\\s*")[[1]]
   }
 
-  data %>%
-    group_by(geo_admin0, Availability) %>%
+  out = data %>%
+    group_by(geo_admin0, availability) %>%
     group_modify(function(.x, .y) {
-      diag_set = setdiff(unique(.x$diagnostic_method), "NULL")
-      if (length(diag_set) == 2) {
-        .x$diagnostic_method = "Biochemical/Hematological/Molecular Diagnosis"
-      } else if (length(diag_set) == 1) {
-        .x$diagnostic_method[.x$diagnostic_method == "NULL"] = diag_set
+      # Per country+availability group, build one diagnostic-method label from
+      # all unique non-Unspecified values and apply it to the whole group.
+      # This automatically propagates a single concrete value to every row.
+      diag_set = unique(as.character(.x$diagnostic_method))
+      diag_set = trimws(diag_set)
+      diag_set = diag_set[
+        !is.na(diag_set) &
+          nzchar(diag_set) &
+          tolower(diag_set) != "unspecified"
+      ]
+
+      if (length(diag_set) > 0) {
+        .x$diagnostic_method_0 = paste(sort(diag_set), collapse = "/")
+      } else {
+        .x$diagnostic_method_0 = "Unspecified"
       }
       .x
     }) %>%
@@ -1535,8 +1698,8 @@ harmonize_healthcare_subset = function(data) {
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      start_vals = suppressWarnings(as.numeric(setdiff(.x$start_year, "NULL")))
-      end_vals = suppressWarnings(as.numeric(setdiff(.x$end_year, "NULL")))
+      start_vals = suppressWarnings(as.numeric(setdiff(.x$start_year, NA)))
+      end_vals = suppressWarnings(as.numeric(setdiff(.x$end_year, NA)))
       start_min = if (length(start_vals) > 0) min(start_vals, na.rm = TRUE) else NA_real_
       end_max = if (length(end_vals) > 0) max(end_vals, na.rm = TRUE) else NA_real_
       .x$known_implementation_period = dplyr::case_when(
@@ -1560,7 +1723,14 @@ harmonize_healthcare_subset = function(data) {
       .x
     }) %>%
     ungroup() %>%
-    distinct()
+    distinct() #%>%
+    #mutate(availability = factor(as.character(Availability), levels = availability_levels))
+
+  debug_capture("output", out)
+  if (isTRUE(debug_mode)) {
+    return(list(result = out, steps = debug_steps))
+  }
+  out
 }
 
 # ---------------------------------------------------------------------------
@@ -1570,10 +1740,20 @@ harmonize_healthcare_subset = function(data) {
 build_query_bundle = function(raw_qs) {
   timing_env = new.env(parent = emptyenv())
   total_start = proc.time()[["elapsed"]]
+  debug_mode = debug_bundle_enabled()
+  debug_steps = list()
+  debug_capture = function(label, value) {
+    if (!isTRUE(debug_mode)) {
+      return(invisible(NULL))
+    }
+    debug_steps[[length(debug_steps) + 1L]] <<- list(label = label, value = value)
+    invisible(NULL)
+  }
 
   Query = timed_call(timing_env, "parse_extract", function() {
     Extract(Parse(raw_qs))
   })
+  debug_capture("query_parsed", Query)
 
   # Joomla iframe currently forwards only country; default to Country-level resolution.
   if (!is.null(Query$Country) && is.null(Query$Resolution)) {
@@ -1598,6 +1778,7 @@ build_query_bundle = function(raw_qs) {
     }
     acc
   }, names(Query), init = list())
+  debug_capture("query_info", Info)
 
   if (is.null(Info$DataType) || is.na(Info$DataType)) {
     Info$DataType = "Curated data"
@@ -1625,7 +1806,7 @@ build_query_bundle = function(raw_qs) {
 
   if (length(validation_errors) > 0) {
     timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
-    return(list(
+    bundle = list(
       DataType = Info$DataType,
       query_info = Info,
       prediction = NULL,
@@ -1636,13 +1817,23 @@ build_query_bundle = function(raw_qs) {
       MetricUnit = NULL,
       validation_errors = validation_errors,
       timings = timing_list(timing_env)
-    ))
+    )
+    if (isTRUE(debug_mode)) {
+      debug_capture("validation_errors", validation_errors)
+      bundle$debug = list(
+        enabled = TRUE,
+        query = Query,
+        info = Info,
+        steps = debug_steps
+      )
+    }
+    return(bundle)
   }
 
   if (identical(Info$DataType, "Prediction data")) {
     timing_env[["prediction_assets"]] = 0
     timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
-    return(list(
+    bundle = list(
       DataType = Info$DataType,
       query_info = Info,
       prediction = prediction_assets,
@@ -1653,7 +1844,17 @@ build_query_bundle = function(raw_qs) {
       MetricUnit = NULL,
       validation_errors = character(),
       timings = timing_list(timing_env)
-    ))
+    )
+    if (isTRUE(debug_mode)) {
+      debug_capture("prediction_mode", TRUE)
+      bundle$debug = list(
+        enabled = TRUE,
+        query = Query,
+        info = Info,
+        steps = debug_steps
+      )
+    }
+    return(bundle)
   }
 
   SubsetE = NULL
@@ -1701,6 +1902,8 @@ build_query_bundle = function(raw_qs) {
   })
   SubsetE = resolution_result$SubsetE
   SubsetHCP = resolution_result$SubsetHCP
+  debug_capture("after_resolution_SubsetE", SubsetE)
+  debug_capture("after_resolution_SubsetHCP", SubsetHCP)
 
   # --- Measure, Cause, Globin phenotype, IthaID, Healthcare ---
   parameter_result = timed_call(timing_env, "parameter_filter", function() {
@@ -1787,6 +1990,8 @@ build_query_bundle = function(raw_qs) {
   })
   SubsetE = parameter_result$SubsetE
   SubsetHCP = parameter_result$SubsetHCP
+  debug_capture("after_parameter_SubsetE", SubsetE)
+  debug_capture("after_parameter_SubsetHCP", SubsetHCP)
 
   # --- Metric & Aggregation ---
   if (!is.null(SubsetE)) {
@@ -1941,18 +2146,47 @@ build_query_bundle = function(raw_qs) {
   }
 
   if (!is.null(SubsetHCP) && nrow(SubsetHCP) > 0) {
+    debug_capture("before_healthcare_harmonize", SubsetHCP)
     SubsetHCP = timed_call(timing_env, "healthcare_harmonize", function() {
-      harmonize_healthcare_subset(SubsetHCP)
+      harmonized = harmonize_healthcare_subset(SubsetHCP, debug_mode = debug_mode)
+      if (isTRUE(debug_mode)) {
+        debug_capture("healthcare_harmonize_steps", harmonized$steps)
+        return(harmonized$result)
+      }
+      harmonized
     })
+    debug_capture("after_healthcare_harmonize", SubsetHCP)
   }
 
   timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
 
-  list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, MetricUnit = MetricUnit, validation_errors = character(), timings = timing_list(timing_env))
+  bundle = list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, MetricUnit = MetricUnit, validation_errors = character(), timings = timing_list(timing_env))
+
+  if (isTRUE(debug_mode)) {
+    query_bundle_debug_counter <<- query_bundle_debug_counter + 1L
+    debug_name = sprintf("bundle_debug_%04d", query_bundle_debug_counter)
+    bundle$debug = list(
+      enabled = TRUE,
+      name = debug_name,
+      query = Query,
+      info = Info,
+      steps = debug_steps
+    )
+    assign(debug_name, bundle$debug, envir = query_bundle_debug_store)
+    assign("ithamaps_last_bundle_debug", bundle$debug, envir = .GlobalEnv)
+    assign("ithamaps_last_bundle_debug_name", debug_name, envir = .GlobalEnv)
+  }
+
+  bundle
 }
 
 build_query_bundle_cached = function(raw_qs) {
-  cache_key = paste(query_bundle_cache_version, normalize_query_string(raw_qs), sep = "::")
+  cache_key = paste(
+    query_bundle_cache_version,
+    ifelse(debug_bundle_enabled(), "debug_on", "debug_off"),
+    normalize_query_string(raw_qs),
+    sep = "::"
+  )
 
   bundle_has_timings = function(bundle) {
     is.list(bundle) && is.list(bundle$timings) && length(bundle$timings) > 0
@@ -1984,3 +2218,4 @@ build_query_bundle_cached = function(raw_qs) {
   assign(cache_key, bundle, envir = query_bundle_cache)
   bundle
 }
+

@@ -11,7 +11,7 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install R packages (parallel compilation/install while keeping >=2 cores free).
-RUN R -e "options(Ncpus = max(1L, parallel::detectCores(logical = TRUE) - 2L)); install.packages(c('DT', 'sf', 'dplyr', 'bslib', 'shiny', 'readxl', 'stringr', 'metafor', 'leaflet', 'viridis', 'ggplot2', 'RMariaDB', 'raster', 'webshot2', 'shinycssloaders', 'zip', 'box', 'future', 'future.apply', 'ragg', 'jsonlite'))"
+RUN R -e "options(Ncpus = max(1L, parallel::detectCores(logical = TRUE) - 2L)); install.packages(c('DT', 'sf', 'dplyr', 'tidyr',  'bslib', 'shiny', 'readxl', 'stringr', 'metafor', 'leaflet', 'viridis', 'ggplot2', 'RMariaDB', 'raster', 'webshot2', 'shinycssloaders', 'zip', 'box', 'future', 'future.apply', 'ragg', 'jsonlite', 'mapview'))"
 
 # Credential and connection env vars — override at runtime, never bake values in
 # ITHAMAPS_MACHINE: row key to select from User_Configuration.xlsx (e.g. "docker")

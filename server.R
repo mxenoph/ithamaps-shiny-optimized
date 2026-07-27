@@ -915,7 +915,7 @@ server = function(input, output, session) {
         )
         values = c(
           country_names[i],
-          SubsetHCP$Availability[i],
+          SubsetHCP$availability[i],
           SubsetHCP$timeframe[i],
           SubsetHCP$known_implementation_period[i],
           SubsetHCP$eligibility[i],
@@ -1530,15 +1530,15 @@ server = function(input, output, session) {
       hcp_sf = hcp_sf %>%
         mutate(
           hover_label = paste0(
-            "<strong>", Country, "</strong><br>Healthcare availability: ", Availability
+            "<strong>", Country, "</strong><br>Healthcare availability: ", availability
           )
         )
 
-      availability_levels = c(
-        "Available (Nationally)",
-        "Available (Regionally)",
-        "Unavailable"
-      )
+      availability_levels = levels(hcp_sf$availability)
+      if (is.null(availability_levels) || length(availability_levels) == 0) {
+        availability_levels = unique(as.character(hcp_sf$availability))
+      }
+      availability_levels = availability_levels[!is.na(availability_levels) & nzchar(availability_levels)]
       hcp_palette = viridis::viridis(3, option = "F", begin = 0, end = 0.7, direction = -1)
       pal_hcp = colorFactor(palette = hcp_palette, domain = availability_levels, na.color = "#cccccc")
 
@@ -1566,7 +1566,7 @@ server = function(input, output, session) {
             textsize = "12px",
             style = list("padding" = "4px 6px")
           ),
-          fillColor = ~ pal_hcp(Availability)
+          fillColor = ~ pal_hcp(availability)
         ) %>%
         addLegend(
           pal = pal_hcp,
@@ -1794,13 +1794,13 @@ server = function(input, output, session) {
       df = SubsetHCP %>%
         mutate(Country = adm0_lookup$Region[idx0]) %>%
         dplyr::select(any_of(c(
-          "hcp_entry_id", "Country", "Availability", "timeframe", "known_implementation_period",
+          "hcp_entry_id", "Country", "availability", "timeframe", "known_implementation_period",
           "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
           "recruitment_site", "note", "citation_str"
         ))) %>%
         dplyr::rename(any_of(c(
           "HCP Entry ID" = "hcp_entry_id",
-          "Availability" = "Availability",
+          "Availability" = "availability",
           "Study period" = "timeframe",
           "Known implementation timeframe" = "known_implementation_period",
           "Eligibility" = "eligibility",
@@ -2093,6 +2093,18 @@ server = function(input, output, session) {
     }
   )
 
+  build_hcp_export_sf = function() {
+    SubsetHCP = SubsetHCP_r()
+    idx0 = match(SubsetHCP$geo_admin0, adm0_sel$geo_admin0)
+    SubsetHCP %>%
+      mutate(
+        Country = adm0_lookup$Region[idx0],
+        geom = st_geometry(adm0_sel)[idx0]
+      ) %>%
+      st_as_sf(sf_column_name = "geom") %>%
+      filter(!is.na(idx0))
+  }
+
   output$download_png = downloadHandler(
     contentType = "image/png",
     filename = function() {
@@ -2175,7 +2187,113 @@ server = function(input, output, session) {
       }
 
       if (is_hcp_mode()) {
-        showNotification("PNG export is not available for Healthcare availability data.", type = "warning", duration = 4)
+        set_export_status("Exporting PNG... Please wait.")
+        on.exit(clear_export_status(), add = TRUE)
+
+        hcp_sf = build_hcp_export_sf()
+        if (is.null(hcp_sf) || nrow(hcp_sf) == 0) {
+          stop("No healthcare polygons available for PNG export.")
+        }
+
+        availability_levels = levels(hcp_sf$availability)
+        if (is.null(availability_levels) || length(availability_levels) == 0) {
+          availability_levels = unique(as.character(hcp_sf$availability))
+        }
+        availability_levels = availability_levels[!is.na(availability_levels) & nzchar(availability_levels)]
+        # Keep export colors aligned with the interactive Leaflet palette.
+        hcp_palette = viridis::viridis(3, option = "F", begin = 0, end = 0.7, direction = -1)
+        pal_hcp_export = colorFactor(
+          palette = hcp_palette,
+          domain = availability_levels,
+          na.color = "#cccccc"
+        )
+        availability_palette = stats::setNames(
+          unname(pal_hcp_export(availability_levels)),
+          availability_levels
+        )
+
+        hcp_sf = hcp_sf %>%
+          mutate(
+            Availability_norm = as.character(availability),
+            Availability_norm = factor(Availability_norm, levels = availability_levels)
+          )
+
+        selected_ids = unique(hcp_sf$geo_admin0)
+        context_sf = adm0_sel %>%
+          filter(!(geo_admin0 %in% selected_ids))
+
+        # Center export extent around available healthcare data with padding.
+        bbox = sf::st_bbox(hcp_sf)
+        x_pad = max((bbox$xmax - bbox$xmin) * 0.18, 2)
+        y_pad = max((bbox$ymax - bbox$ymin) * 0.18, 2)
+        xlim = c(max(-180, bbox$xmin - x_pad), min(180, bbox$xmax + x_pad))
+        ylim = c(max(-85, bbox$ymin - y_pad), min(85, bbox$ymax + y_pad))
+
+        bbox_poly = sf::st_as_sfc(sf::st_bbox(c(
+          xmin = xlim[1],
+          xmax = xlim[2],
+          ymin = ylim[1],
+          ymax = ylim[2]
+        ), crs = sf::st_crs(adm0_sel)))
+
+        context_sf = suppressWarnings(tryCatch(
+          sf::st_crop(context_sf, bbox_poly),
+          error = function(e) context_sf
+        ))
+
+        # Use point-on-surface labels so country names remain inside polygons
+        # where possible and avoid centroid fall-out on irregular geometries.
+        context_labels = if (nrow(context_sf) > 0) suppressWarnings(sf::st_point_on_surface(context_sf)) else context_sf
+        hcp_labels = suppressWarnings(sf::st_point_on_surface(hcp_sf))
+
+        p = ggplot2::ggplot() +
+          ggplot2::geom_sf(
+            data = context_sf,
+            fill = "grey88",
+            colour = "grey60",
+            linewidth = 0.2,
+            alpha = 0.95
+          ) +
+          ggplot2::geom_sf_text(
+            data = context_labels,
+            ggplot2::aes(label = Region),
+            colour = "grey45",
+            size = 2.2,
+            check_overlap = TRUE
+          ) +
+          ggplot2::geom_sf(
+            data = hcp_sf,
+            ggplot2::aes(fill = Availability_norm),
+            colour = "black",
+            linewidth = 0.2,
+            alpha = map_fill_opacity
+          ) +
+          ggplot2::geom_sf_text(
+            data = hcp_labels,
+            ggplot2::aes(label = Country),
+            colour = "black",
+            size = 2.6,
+            fontface = "bold",
+            check_overlap = TRUE
+          ) +
+          ggplot2::scale_fill_manual(
+            values = availability_palette,
+            breaks = availability_levels,
+            limits = availability_levels,
+            drop = FALSE,
+            name = "Healthcare availability",
+            na.translate = FALSE,
+            na.value = "grey80"
+          ) +
+          ggplot2::guides(fill = ggplot2::guide_legend(override.aes = list(colour = "black", alpha = 1))) +
+          ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+          ggplot2::theme_minimal(base_size = 11) +
+          ggplot2::theme(
+            panel.grid = ggplot2::element_line(colour = "grey90"),
+            legend.position = "right"
+          )
+
+        ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = ragg::agg_png, bg = "white")
         return(invisible(NULL))
       }
       set_export_status("Exporting PNG... Please wait.")
@@ -2344,12 +2462,12 @@ server = function(input, output, session) {
         df = SubsetHCP %>%
           mutate(Country = adm0_lookup$Region[idx0]) %>%
           dplyr::select(any_of(c(
-            "Country", "Availability", "timeframe", "known_implementation_period",
+            "Country", "availability", "timeframe", "known_implementation_period",
             "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
             "recruitment_site", "note", "citation_str"
           ))) %>%
           dplyr::rename(any_of(c(
-            "Availability" = "Availability",
+            "Availability" = "availability",
             "Study period" = "timeframe", "Eligibility" = "eligibility",
             "Known implementation timeframe" = "known_implementation_period",
             "Implementation" = "implementation",
@@ -2403,7 +2521,29 @@ server = function(input, output, session) {
         return(invisible(NULL))
       }
       if (is_hcp_mode()) {
-        showNotification("GeoJSON export is not available for Healthcare availability data.", type = "warning", duration = 4)
+        hcp_sf = build_hcp_export_sf() %>%
+          dplyr::select(any_of(c(
+            "Country", "availability", "timeframe", "known_implementation_period",
+            "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
+            "recruitment_site", "note", "citation_str", "geom"
+          ))) %>%
+          dplyr::rename(any_of(c(
+            "Study period" = "timeframe",
+            "Known implementation timeframe" = "known_implementation_period",
+            "Eligibility" = "eligibility",
+            "Implementation" = "implementation",
+            "Application" = "application",
+            "Compensation" = "compensation",
+            "Diagnostic method" = "diagnostic_method",
+            "Uptake" = "uptake",
+            "Recruitment site" = "recruitment_site",
+            "Notes" = "note",
+            "Source" = "citation_str"
+          )))
+        if (is.null(hcp_sf) || nrow(hcp_sf) == 0) {
+          stop("No healthcare polygons available for GeoJSON export.")
+        }
+        st_write(hcp_sf, file, driver = "GeoJSON", delete_dsn = TRUE)
         return(invisible(NULL))
       }
       SubsetE = SubsetE_r()
@@ -2449,7 +2589,29 @@ server = function(input, output, session) {
         return(invisible(NULL))
       }
       if (is_hcp_mode()) {
-        showNotification("GPKG export is not available for Healthcare availability data.", type = "warning", duration = 4)
+        hcp_sf = build_hcp_export_sf() %>%
+          dplyr::select(any_of(c(
+            "Country", "availability", "timeframe", "known_implementation_period",
+            "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
+            "recruitment_site", "note", "citation_str", "geom"
+          ))) %>%
+          dplyr::rename(any_of(c(
+            "Study period" = "timeframe",
+            "Known implementation timeframe" = "known_implementation_period",
+            "Eligibility" = "eligibility",
+            "Implementation" = "implementation",
+            "Application" = "application",
+            "Compensation" = "compensation",
+            "Diagnostic method" = "diagnostic_method",
+            "Uptake" = "uptake",
+            "Recruitment site" = "recruitment_site",
+            "Notes" = "note",
+            "Source" = "citation_str"
+          )))
+        if (is.null(hcp_sf) || nrow(hcp_sf) == 0) {
+          stop("No healthcare polygons available for GPKG export.")
+        }
+        st_write(hcp_sf, dsn = file, driver = "GPKG", delete_dsn = TRUE)
         return(invisible(NULL))
       }
       SubsetE = SubsetE_r()
