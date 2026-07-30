@@ -589,9 +589,9 @@ availability_levels = expand_grid(
   pull(combo_level)
 
 # check in sql:
-# SELECT * FROM `hcp_per_region` AS h LEFT JOIN regions AS r ON r.regions_id = h.regions_id LEFT JOIN country AS c ON r.country_id = c.idCountry WHERE h.hcp_id =14 AND c.continentName = "Europe";
+# SELECT * FROM `hcp_per_region` AS h LEFT JOIN regions AS r ON r.regions_id = h.regions_id LEFT JOIN country AS c ON r.country_id = c.idCountry WHERE h.hcp_id =14 AND c.continentName = "Europe" AND h.cause_id = 10
+# ORDER BY `h`.`regions_id` ASC;
 db_hcp_per_region = db_hcp_per_region %>%
-  #filter(hcp_entry_id %in% c(459, 457, 771, 463, 461, 921, 925, 926, 460)) %>%
   rename("source_id" = source) %>%
   left_join(db_regions %>% select(-c(created, updated)), by = "regions_id") %>%
   left_join(db_cause, by = "cause_id") %>%
@@ -1606,11 +1606,6 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
     return(data)
   }
 
-  availability_levels = if (is.factor(data$availability)) {
-    levels(data$availability)
-  } else {
-    unique(as.character(data$availability))
-  }
   debug_capture("input", data)
 
   compensation_sources = function(comment) {
@@ -1620,12 +1615,43 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
     strsplit(comment, "\\s*&\\s*")[[1]]
   }
 
-  out = data %>%
-    group_by(geo_admin0, availability) %>%
+  harmonised_data = data %>%
+    group_by(geo_admin0) %>%
     group_modify(function(.x, .y) {
-      # Per country+availability group, build one diagnostic-method label from
-      # all unique non-Unspecified values and apply it to the whole group.
-      # This automatically propagates a single concrete value to every row.
+      # Build a country-level availability label with priority rules:
+      # National > Regional > Unavailable > Unspecified. Original values stay
+      # untouched; the harmonized result is written to a new factor column.
+      harmonise_availability_value = function(v) {
+        value = trimws(as.character(v))
+        if (is.na(value) || !nzchar(value) || value %in% c("NULL", "Unspecified")) {
+          return("Unspecified")
+        }
+        value
+      }
+
+      raw_levels = if (is.factor(.x$availability)) levels(.x$availability) else unique(as.character(.x$availability))
+      harmonised_levels = unique(vapply(raw_levels, harmonise_availability_value, character(1)))
+      harmonised_levels = unique(c(harmonised_levels, "Unspecified"))
+
+      availability_values = vapply(.x$availability, harmonise_availability_value, character(1))
+      availability_set = unique(availability_values[availability_values != "Unspecified"])
+
+      if (any(availability_set == "Available (Nationally)")) {
+        label = "Available (Nationally)"
+      } else if (any(availability_set == "Available (Regionally)")) {
+        label = "Available (Regionally)"
+      } else if (any(availability_set == "Unavailable")) {
+        label = "Unavailable"
+      } else if (length(availability_set) == 1) {
+        label = availability_set[[1]]
+      } else {
+        label = "Unspecified"
+      }
+
+      .x$availability_harmonised = factor(rep(label, nrow(.x)), levels = harmonised_levels)
+
+      # Per country group, build one diagnostic-method label from all unique
+      # non-Unspecified values and apply it to the whole group.
       diag_set = unique(as.character(.x$diagnostic_method))
       diag_set = trimws(diag_set)
       diag_set = diag_set[
@@ -1635,9 +1661,9 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
       ]
 
       if (length(diag_set) > 0) {
-        .x$diagnostic_method_0 = paste(sort(diag_set), collapse = "/")
+        .x$diagnostic_method_harmonised = paste(sort(diag_set), collapse = "/")
       } else {
-        .x$diagnostic_method_0 = "Unspecified"
+        .x$diagnostic_method_harmonised = "Unspecified"
       }
       .x
     }) %>%
@@ -1657,44 +1683,95 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
       if (length(years) > 0) {
         label = paste0(label, " (Compensation since ", min(years), ")")
       }
-      .x$compensation = label
+      .x$compensation_harmonised = label
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      elig = setdiff(unique(.x$eligibility), "NULL")
-      if ("Universal" %in% elig) {
+      # Recode levels first (Targeted + On request -> Targeted/On request),
+      # then prioritize group entries without mutating the original column.
+      harmonise_eligibility_value = function(v) {
+        value = trimws(as.character(v))
+        if (is.na(value) || !nzchar(value) || value %in% c("NULL", "Unspecified")) {
+          return("Unspecified")
+        }
+        if (value %in% c("Targeted", "On request")) {
+          return("Targeted/On request")
+        }
+        value
+      }
+
+      raw_levels = if (is.factor(.x$eligibility)) levels(.x$eligibility) else unique(as.character(.x$eligibility))
+      harmonised_levels = unique(vapply(raw_levels, harmonise_eligibility_value, character(1)))
+      harmonised_levels = unique(c(harmonised_levels, "Unspecified"))
+
+      elig_values = vapply(.x$eligibility, harmonise_eligibility_value, character(1))
+      elig_set = unique(elig_values[elig_values != "Unspecified"])
+
+      if ("Universal" %in% elig_set) {
         label = "Universal"
-      } else if (all(c("Targeted", "On request") %in% elig)) {
-        label = "Targeted/On request"
-      } else if (length(elig) == 1) {
-        label = elig
+      } else if (length(elig_set) == 1) {
+        label = elig_set[[1]]
       } else {
         label = "Unspecified"
       }
-      .x$eligibility = label
+
+      .x$eligibility_harmonised = factor(rep(label, nrow(.x)), levels = harmonised_levels)
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      app_vals = unique(.x$application)
-      if ("Mandatory" %in% app_vals) {
+      # Keep original application untouched; write prioritized group label to
+      # a harmonized factor column.
+      harmonise_application_value = function(v) {
+        value = trimws(as.character(v))
+        if (is.na(value) || !nzchar(value) || value %in% c("NULL", "Unspecified")) {
+          return("Unspecified")
+        }
+        value
+      }
+
+      raw_levels = if (is.factor(.x$application)) levels(.x$application) else unique(as.character(.x$application))
+      harmonised_levels = unique(vapply(raw_levels, harmonise_application_value, character(1)))
+      harmonised_levels = unique(c(harmonised_levels, "Unspecified"))
+
+      app_values = vapply(.x$application, harmonise_application_value, character(1))
+      app_set = unique(app_values[app_values != "Unspecified"])
+
+      if ("Mandatory" %in% app_set) {
         label = "Mandatory"
-      } else if ("Voluntary" %in% app_vals) {
+      } else if ("Voluntary" %in% app_set) {
         label = "Voluntary"
       } else {
         label = "Unspecified"
       }
-      .x$application = label
+
+      .x$application_harmonised = factor(rep(label, nrow(.x)), levels = harmonised_levels)
       .x
     }) %>%
     group_modify(function(.x, .y) {
-      impl_vals = setdiff(unique(.x$implementation), "NULL")
-      if (length(impl_vals) == 0) {
-        label = "NULL"
-      } else {
-        impl_vals = tools::toTitleCase(tolower(impl_vals))
-        label = paste(sort(impl_vals), collapse = "/")
+      # Keep original implementation untouched; write grouped harmonized value
+      # to a dedicated factor column with Unspecified as the placeholder.
+      harmonise_implementation_value = function(v) {
+        value = trimws(as.character(v))
+        if (is.na(value) || !nzchar(value) || value %in% c("NULL", "Unspecified")) {
+          return("Unspecified")
+        }
+        tools::toTitleCase(tolower(value))
       }
-      .x$implementation = label
+
+      raw_levels = if (is.factor(.x$implementation)) levels(.x$implementation) else unique(as.character(.x$implementation))
+      harmonised_levels = unique(vapply(raw_levels, harmonise_implementation_value, character(1)))
+      harmonised_levels = unique(c(harmonised_levels, "Unspecified"))
+
+      impl_values = vapply(.x$implementation, harmonise_implementation_value, character(1))
+      impl_set = unique(impl_values[impl_values != "Unspecified"])
+
+      if (length(impl_set) == 0) {
+        label = "Unspecified"
+      } else {
+        label = paste(sort(impl_set), collapse = "/")
+      }
+
+      .x$implementation_harmonised = factor(rep(label, nrow(.x)), levels = harmonised_levels)
       .x
     }) %>%
     group_modify(function(.x, .y) {
@@ -1702,7 +1779,7 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
       end_vals = suppressWarnings(as.numeric(setdiff(.x$end_year, NA)))
       start_min = if (length(start_vals) > 0) min(start_vals, na.rm = TRUE) else NA_real_
       end_max = if (length(end_vals) > 0) max(end_vals, na.rm = TRUE) else NA_real_
-      .x$known_implementation_period = dplyr::case_when(
+      .x$known_implementation_period_harmonised = dplyr::case_when(
         !is.na(start_min) & !is.na(end_max) & start_min == end_max ~ as.character(start_min),
         !is.na(start_min) & !is.na(end_max) ~ paste0(start_min, "-", end_max),
         !is.na(start_min) & is.na(end_max) ~ paste0("Since ", start_min),
@@ -1719,11 +1796,32 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
         }
         paste(sort(out), collapse = " | ")
       }
-      .x$citation_str = collapse_field(.x$citation_str)
+      .x$citation_str_harmonised = collapse_field(.x$citation_str)
       .x
     }) %>%
+    group_modify(function(.x, .y) {
+      collapse_non_missing = function(vec, default = "Unspecified") {
+        vals = trimws(as.character(vec))
+        vals = vals[
+          !is.na(vals) &
+            nzchar(vals) &
+            !(vals %in% c("NULL", "Unspecified", "Not applicable"))
+        ]
+        vals = sort(unique(vals))
+        if (length(vals) == 0) {
+          return(default)
+        }
+        paste(vals, collapse = " | ")
+      }
+
+      .x$uptake_harmonised = collapse_non_missing(.x$uptake)
+      .x$recruitment_site_harmonised = collapse_non_missing(.x$recruitment_site)
+      .x$note_harmonised = collapse_non_missing(.x$note, default = "None")
+      .x
+    }) 
+  out = harmonised_data %>%
     ungroup() %>%
-    distinct() #%>%
+    distinct(geo_admin0, across(ends_with("harmonised")))
     #mutate(availability = factor(as.character(Availability), levels = availability_levels))
 
   debug_capture("output", out)
@@ -1859,6 +1957,7 @@ build_query_bundle = function(raw_qs) {
 
   SubsetE = NULL
   SubsetHCP = NULL
+  SubsetHCPRaw = NULL
   SubsetG = NULL
   MetricN = NULL
   MetricUnit = NULL
@@ -1990,6 +2089,7 @@ build_query_bundle = function(raw_qs) {
   })
   SubsetE = parameter_result$SubsetE
   SubsetHCP = parameter_result$SubsetHCP
+  SubsetHCPRaw = SubsetHCP
   debug_capture("after_parameter_SubsetE", SubsetE)
   debug_capture("after_parameter_SubsetHCP", SubsetHCP)
 
@@ -2161,6 +2261,7 @@ build_query_bundle = function(raw_qs) {
   timing_env[["total_query_bundle"]] = round(proc.time()[["elapsed"]] - total_start, 3)
 
   bundle = list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, MetricUnit = MetricUnit, validation_errors = character(), timings = timing_list(timing_env))
+  bundle$SubsetHCPRaw = SubsetHCPRaw
 
   if (isTRUE(debug_mode)) {
     query_bundle_debug_counter <<- query_bundle_debug_counter + 1L
