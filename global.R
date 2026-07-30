@@ -140,6 +140,7 @@ read_db_prefixes = function(path = "secrets/db_prefix") {
 }
 
 db_prefixes = read_db_prefixes()
+ithanet_site_root = Sys.getenv("ITHAMAPS_ITHA_ROOT", unset = "http://localhost/live-ithanet-j4")
 ithanet_dbname = paste0("ithabase", db_prefixes$ithabase_prefix)
 joomla_dbname = paste0("joomla", db_prefixes$joomla_prefix)
 
@@ -596,8 +597,13 @@ db_hcp_per_region = db_hcp_per_region %>%
   left_join(db_regions %>% select(-c(created, updated)), by = "regions_id") %>%
   left_join(db_cause, by = "cause_id") %>%
   left_join(db_ithamaps_accumulated_sources %>%
-    rename("ihme_id" = expert) %>%
-    select(-c(created, updated)), by = "source_id") %>%
+            mutate(source_link = case_when(!is.na(pmid) ~str_c("https://pubmed.ncbi.nlm.nih.gov/", pmid),
+                                           is.na(pmid) & !is.na(doi) ~ str_c("https://doi.org/", doi),
+                                           is.na(pmid) & is.na(doi) & !is.na(expert) ~ str_c(ithanet_site_root, "/community/experts?expID=", expert), is.na(pmid) & is.na(doi) & is.na(expert) & !is.na(citation_str) ~ citation_str,
+                                          TRUE ~ report)) %>%
+            rename("ihme_id" = expert) %>%
+            select(-c(created, updated)),
+            by = "source_id") %>%
   left_join(db_ithamaps_log %>%
     filter(!is.na(hcp_entry_id)) %>%
     rename("expert_id" = curated_by) %>%
@@ -697,6 +703,15 @@ db_hcp_per_region = db_hcp_per_region %>%
     compensation = gsub("and", "&", compensation),
     compensation = gsub(",", " &", compensation),
     compensation = ifelse(compensation_comment != "NULL", paste0(compensation, " (", compensation_comment, ")"), compensation)
+  ) %>%
+  mutate(
+    source_label = dplyr::case_when(
+      !is.na(pmid) ~ str_c("PMID: ", pmid),
+      is.na(pmid) & !is.na(doi) ~ str_c("DOI: ", doi),
+      is.na(pmid) & is.na(doi) & !is.na(expert) ~ str_c("expert: ", expert),
+      !is.na(citation_str) ~ citation_str,
+      TRUE ~ "Source"
+    )
   ) %>%
   select(-any_of(c(
     "comments", "curated_by", "expert", "source_id", "pmid", "report", "doi", "hc_key",
@@ -1423,7 +1438,7 @@ Search = function(Item, Identifier, Data) {
 # (Parse, Extract, Search are defined above and used per-session in server)
 
 query_bundle_cache = new.env(parent = emptyenv())
-query_bundle_cache_version = "timings_v3_debug"
+query_bundle_cache_version = "timings_v4_links"
 
 ithamaps_debug_mode = tolower(trimws(Sys.getenv("ITHAMAPS_DEBUG_MODE", unset = "false"))) %in% c("1", "true", "yes", "on")
 query_bundle_debug_store = new.env(parent = emptyenv())
@@ -1797,6 +1812,22 @@ harmonize_healthcare_subset = function(data, debug_mode = FALSE) {
         paste(sort(out), collapse = " | ")
       }
       .x$citation_str_harmonised = collapse_field(.x$citation_str)
+      pairs = unique(data.frame(
+        label = as.character(if ("source_label" %in% names(.x)) .x$source_label else .x$citation_str),
+        url   = as.character(if ("source_link"  %in% names(.x)) .x$source_link  else NA_character_),
+        stringsAsFactors = FALSE
+      ))
+      pairs = pairs[!is.na(pairs$label) & pairs$label != "NULL" & nzchar(pairs$label), ]
+      .x$citation_link_harmonised = if (nrow(pairs) == 0) "None" else {
+        lnks = vapply(seq_len(nrow(pairs)), function(i) {
+          lbl = htmltools::htmlEscape(pairs$label[i])
+          url = pairs$url[i]
+          if (!is.na(url) && grepl("^https?://", url, ignore.case = TRUE))
+            paste0('<a href="', htmltools::htmlEscape(url), '" target="_blank" rel="noopener noreferrer">', lbl, '</a>')
+          else lbl
+        }, character(1))
+        paste(sort(unique(lnks)), collapse = " | ")
+      }
       .x
     }) %>%
     group_modify(function(.x, .y) {

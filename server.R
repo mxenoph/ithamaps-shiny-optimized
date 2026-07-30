@@ -195,7 +195,11 @@ server = function(input, output, session) {
     query_bundle()$SubsetE
   })
   SubsetHCP_r = reactive({
-    query_bundle()$SubsetHCP
+    hcp = query_bundle()$SubsetHCP
+    if (!is.null(hcp) && !"citation_link_harmonised" %in% names(hcp)) {
+      hcp[["citation_link_harmonised"]] = hcp[["citation_str_harmonised"]]
+    }
+    hcp
   })
   SubsetHCP_raw_r = reactive({
     query_bundle()$SubsetHCPRaw
@@ -951,7 +955,7 @@ server = function(input, output, session) {
           SubsetHCP$uptake_harmonised[i],
           SubsetHCP$recruitment_site_harmonised[i],
           SubsetHCP$note_harmonised[i],
-          SubsetHCP$citation_str_harmonised[i]
+          SubsetHCP$citation_link_harmonised[i]
         )
         df = data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
         df = df[df$Value != "" & !is.na(df$Value) & df$Value != "Unspecified" & df$Value != "Not applicable", ]
@@ -1832,7 +1836,7 @@ server = function(input, output, session) {
           dplyr::select(any_of(c(
             "hcp_entry_id", "Country", "availability", "timeframe", "eligibility",
             "implementation", "application", "compensation", "diagnostic_method",
-            "uptake", "recruitment_site", "note", "citation_str"
+            "uptake", "recruitment_site", "note", "citation_str", "source_link"
           ))) %>%
           dplyr::rename(any_of(c(
             "HCP Entry ID" = "hcp_entry_id",
@@ -1855,6 +1859,15 @@ server = function(input, output, session) {
 
         details_df = details_df %>%
           mutate(across(everything(), ~ htmltools::htmlEscape(as.character(.x))))
+
+        if ("source_link" %in% names(details_df)) {
+          details_df[["Source"]] = ifelse(
+            !is.na(details_df[["source_link"]]) & grepl("^https?://", details_df[["source_link"]], ignore.case = TRUE),
+            paste0('<a href="', htmltools::htmlEscape(details_df[["source_link"]]), '" target="_blank" rel="noopener noreferrer">', details_df[["Source"]], '</a>'),
+            details_df[["Source"]]
+          )
+          details_df[["source_link"]] = NULL
+        }
 
         header_html = paste0(
           "<tr>",
@@ -1897,7 +1910,7 @@ server = function(input, output, session) {
           "geo_admin0", "Country", "availability_harmonised", "known_implementation_period_harmonised",
           "eligibility_harmonised", "implementation_harmonised", "application_harmonised",
           "compensation_harmonised", "diagnostic_method_harmonised", "uptake_harmonised",
-          "recruitment_site_harmonised", "note_harmonised", "citation_str_harmonised"
+          "recruitment_site_harmonised", "note_harmonised", "citation_link_harmonised"
         ))) %>%
         mutate(
           Expand = "<span style='font-weight:700;'>+</span>"
@@ -1913,7 +1926,7 @@ server = function(input, output, session) {
           "Uptake" = "uptake_harmonised",
           "Recruitment site" = "recruitment_site_harmonised",
           "Notes" = "note_harmonised",
-          "Source" = "citation_str_harmonised"
+          "Source" = "citation_link_harmonised"
         ))) %>%
         dplyr::select(
           Expand,
@@ -1948,6 +1961,44 @@ server = function(input, output, session) {
                var api = this.api();
                var detailsByCountry = %s;
                var keyCol = %d;
+               // BUG (verified via live DOM inspection, DataTables 1.13.6):
+               // row.child() inserts one wrapper <tr><td colspan=N>...</td></tr> into the
+               // SAME <tbody> as normal rows, with NO distinguishing class (no 'child' class
+               // exists on it). DT's own row-selection handler is a jQuery delegated listener
+               // `table.on('mousedown.dt', 'tbody tr', ...)`, bound in the bubble phase on the
+               // <table> element. Because jQuery delegation matches ANY 'tr' descendant of ANY
+               // 'tbody' (not scoped by nesting depth), a mousedown anywhere inside our nested
+               // details table also resolves to that wrapper <tr> and gets 'selected' toggled
+               // onto it. Since the wrapper's only child is one large <td colspan>, the
+               // DataTables CSS rule `tr.selected > *` sets color:white on it — which then
+               // CASCADES (color inherits) into every nested cell, while the inset box-shadow
+               // background does NOT cascade, leaving white text on a non-blue background
+               // (invisible text), and a blue box only where the wrapper td shows through.
+               //
+               // Fix: use the public row() API (not class names, which differ across DT
+               // versions) to detect real vs. injected rows — api.row(tr).length is 1 for a
+               // genuine DataTables row and 0 for our injected wrapper/nested rows. Intercept
+               // 'mousedown' (the event DT actually listens for) in the CAPTURE phase directly
+               // on the <table> node, which is guaranteed to run before DT's bubble-phase
+               // handler on that same node. stopImmediatePropagation() also blocks the
+               // browser's default action for the click target, so for <a href> clicks inside
+               // child rows we must re-trigger navigation manually via window.open().
+               // Verified with a live Playwright session against this exact table: normal row
+               // selection is unaffected, links open exactly once, and no 'selected' class or
+               // white-text regression occurs on child-row content.
+               var tableNode = api.table().node();
+               function blockInjectedRow(e) {
+                 var tr = e.target.closest('tr');
+                 if (!tr || api.row(tr).length !== 0) { return; }
+                 e.stopImmediatePropagation();
+                 if (e.type === 'click') {
+                   var link = e.target.closest('a[href]');
+                   if (link) { window.open(link.href, link.target || '_blank'); }
+                 }
+               }
+               tableNode.addEventListener('mousedown', blockInjectedRow, true);
+               tableNode.addEventListener('click',     blockInjectedRow, true);
+               // Expand / collapse child rows on dt-control cell click.
                api.table().container().addEventListener('click', function(evt) {
                  var cell = evt.target.closest('td.dt-control');
                  if (!cell) { return; }
