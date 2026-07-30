@@ -197,6 +197,9 @@ server = function(input, output, session) {
   SubsetHCP_r = reactive({
     query_bundle()$SubsetHCP
   })
+  SubsetHCP_raw_r = reactive({
+    query_bundle()$SubsetHCPRaw
+  })
   DataType_r = reactive({
     query_bundle()$DataType %||% "Curated data"
   })
@@ -575,14 +578,35 @@ server = function(input, output, session) {
       "Curated data"
     }
 
-    summary_df = bind_rows(
-      data.frame(
-        Parameter = c("Data mode", "Total records", "Shown records"),
-        Selection = c(mode_label, as.character(before_count), as.character(after_count)),
-        stringsAsFactors = FALSE
-      ),
-      params_df
-    )
+    if (is_hcp_mode()) {
+      hcp_raw = SubsetHCP_raw_r()
+      total_raw_entries = if (is.null(hcp_raw)) 0 else nrow(hcp_raw)
+      total_consolidated_records = before_count
+      shown_consolidated_records = after_count
+
+      summary_df = bind_rows(
+        data.frame(
+          Parameter = c("Data mode", "Total records", "Total consolidated records", "Shown consolidated records"),
+          Selection = c(
+            mode_label,
+            as.character(total_raw_entries),
+            as.character(total_consolidated_records),
+            as.character(shown_consolidated_records)
+          ),
+          stringsAsFactors = FALSE
+        ),
+        params_df
+      )
+    } else {
+      summary_df = bind_rows(
+        data.frame(
+          Parameter = c("Data mode", "Total records", "Shown records"),
+          Selection = c(mode_label, as.character(before_count), as.character(after_count)),
+          stringsAsFactors = FALSE
+        ),
+        params_df
+      )
+    }
 
     metric_table_html = ""
     resolution_sel = get_param_selection("Resolution")
@@ -909,24 +933,25 @@ server = function(input, output, session) {
       country_names = adm0_lookup$Region[idx0]
       lapply(seq_len(nrow(SubsetHCP)), function(i) {
         fields = c(
-          "Country", "Availability", "Study period", "Known implementation timeframe",
-          "Eligibility", "Implementation", "Application", "Compensation",
-          "Diagnostic method", "Uptake", "Recruitment site", "Notes", "Source"
+          "Country", "Availability", "Known implementation timeframe",
+          "Eligibility", "Implementation", "Application",
+          "Compensation", "Diagnostic method", "Uptake",
+          "Recruitment site", "Notes", "Source"
         )
         values = c(
           country_names[i],
-          SubsetHCP$availability[i],
-          SubsetHCP$timeframe[i],
-          SubsetHCP$known_implementation_period[i],
-          SubsetHCP$eligibility[i],
-          SubsetHCP$implementation[i],
-          SubsetHCP$application[i],
-          SubsetHCP$compensation[i],
-          SubsetHCP$diagnostic_method[i],
-          SubsetHCP$uptake[i],
-          SubsetHCP$recruitment_site[i],
-          SubsetHCP$note[i],
-          SubsetHCP$citation_str[i]
+          # Use as.character() to ensure that factors are converted to strings for display.
+          as.character(SubsetHCP$availability_harmonised[i]),
+          SubsetHCP$known_implementation_period_harmonised[i],
+          as.character(SubsetHCP$eligibility_harmonised[i]),
+          as.character(SubsetHCP$implementation_harmonised[i]),
+          as.character(SubsetHCP$application_harmonised[i]),
+          SubsetHCP$compensation_harmonised[i],
+          SubsetHCP$diagnostic_method_harmonised[i],
+          SubsetHCP$uptake_harmonised[i],
+          SubsetHCP$recruitment_site_harmonised[i],
+          SubsetHCP$note_harmonised[i],
+          SubsetHCP$citation_str_harmonised[i]
         )
         df = data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
         df = df[df$Value != "" & !is.na(df$Value) & df$Value != "Unspecified" & df$Value != "Not applicable", ]
@@ -1530,13 +1555,13 @@ server = function(input, output, session) {
       hcp_sf = hcp_sf %>%
         mutate(
           hover_label = paste0(
-            "<strong>", Country, "</strong><br>Healthcare availability: ", availability
+            "<strong>", Country, "</strong><br>Healthcare availability: ", availability_harmonised
           )
         )
 
-      availability_levels = levels(hcp_sf$availability)
+      availability_levels = levels(hcp_sf$availability_harmonised)
       if (is.null(availability_levels) || length(availability_levels) == 0) {
-        availability_levels = unique(as.character(hcp_sf$availability))
+        availability_levels = unique(as.character(hcp_sf$availability_harmonised))
       }
       availability_levels = availability_levels[!is.na(availability_levels) & nzchar(availability_levels)]
       hcp_palette = viridis::viridis(3, option = "F", begin = 0, end = 0.7, direction = -1)
@@ -1566,7 +1591,7 @@ server = function(input, output, session) {
             textsize = "12px",
             style = list("padding" = "4px 6px")
           ),
-          fillColor = ~ pal_hcp(availability)
+          fillColor = ~ pal_hcp(availability_harmonised)
         ) %>%
         addLegend(
           pal = pal_hcp,
@@ -1790,39 +1815,167 @@ server = function(input, output, session) {
 
     if (is_hcp_mode()) {
       SubsetHCP = SubsetHCP_r()
+      SubsetHCPRaw = SubsetHCP_raw_r()
+      if (is.null(SubsetHCPRaw)) {
+        SubsetHCPRaw = SubsetHCP
+      }
       idx0 = match(SubsetHCP$geo_admin0, adm0_lookup$geo_admin0)
+
+      build_hcp_entry_details_html = function(country_key) {
+        details_rows = SubsetHCPRaw %>%
+          filter(geo_admin0 == country_key)
+
+        detail_idx0 = match(details_rows$geo_admin0, adm0_lookup$geo_admin0)
+        details_df = SubsetHCPRaw %>%
+          filter(geo_admin0 == country_key) %>%
+          mutate(Country = adm0_lookup$Region[detail_idx0]) %>%
+          dplyr::select(any_of(c(
+            "hcp_entry_id", "Country", "availability", "timeframe", "eligibility",
+            "implementation", "application", "compensation", "diagnostic_method",
+            "uptake", "recruitment_site", "note", "citation_str"
+          ))) %>%
+          dplyr::rename(any_of(c(
+            "HCP Entry ID" = "hcp_entry_id",
+            "Availability" = "availability",
+            "Study period" = "timeframe",
+            "Eligibility" = "eligibility",
+            "Implementation" = "implementation",
+            "Application" = "application",
+            "Compensation" = "compensation",
+            "Diagnostic method" = "diagnostic_method",
+            "Uptake" = "uptake",
+            "Recruitment site" = "recruitment_site",
+            "Notes" = "note",
+            "Source" = "citation_str"
+          )))
+
+        if (nrow(details_df) == 0) {
+          return("<div class='px-2 py-1 text-muted'>No individual entries available.</div>")
+        }
+
+        details_df = details_df %>%
+          mutate(across(everything(), ~ htmltools::htmlEscape(as.character(.x))))
+
+        header_html = paste0(
+          "<tr>",
+          paste0("<th>", names(details_df), "</th>", collapse = ""),
+          "</tr>"
+        )
+
+        rows_html = paste(
+          apply(details_df, 1, function(row) {
+            paste0(
+              "<tr>",
+              paste0("<td>", row, "</td>", collapse = ""),
+              "</tr>"
+            )
+          }),
+          collapse = ""
+        )
+
+        paste0(
+          "<div class='px-2 py-2'>",
+          "<div style='font-weight:600; margin-bottom:6px;'>Individual entries used in harmonisation</div>",
+          "<div style='overflow-x:auto;'>",
+          "<table class='table table-sm table-bordered' style='font-size:0.82rem; margin-bottom:0;'>",
+          "<thead>", header_html, "</thead>",
+          "<tbody>", rows_html, "</tbody>",
+          "</table></div></div>"
+        )
+      }
+
+      details_country_keys = unique(as.character(SubsetHCP$geo_admin0))
+      details_by_country = stats::setNames(
+        lapply(details_country_keys, build_hcp_entry_details_html),
+        details_country_keys
+      )
+      details_by_country_json = jsonlite::toJSON(details_by_country, auto_unbox = TRUE)
+
       df = SubsetHCP %>%
         mutate(Country = adm0_lookup$Region[idx0]) %>%
         dplyr::select(any_of(c(
-          "hcp_entry_id", "Country", "availability", "timeframe", "known_implementation_period",
-          "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
-          "recruitment_site", "note", "citation_str"
+          "geo_admin0", "Country", "availability_harmonised", "known_implementation_period_harmonised",
+          "eligibility_harmonised", "implementation_harmonised", "application_harmonised",
+          "compensation_harmonised", "diagnostic_method_harmonised", "uptake_harmonised",
+          "recruitment_site_harmonised", "note_harmonised", "citation_str_harmonised"
         ))) %>%
+        mutate(
+          Expand = "<span style='font-weight:700;'>+</span>"
+        ) %>%
         dplyr::rename(any_of(c(
-          "HCP Entry ID" = "hcp_entry_id",
-          "Availability" = "availability",
-          "Study period" = "timeframe",
-          "Known implementation timeframe" = "known_implementation_period",
-          "Eligibility" = "eligibility",
-          "Implementation" = "implementation",
-          "Application" = "application",
-          "Compensation" = "compensation",
-          "Diagnostic method" = "diagnostic_method",
-          "Uptake" = "uptake",
-          "Recruitment site" = "recruitment_site",
-          "Notes" = "note",
-          "Source" = "citation_str"
-        )))
+          "Availability" = "availability_harmonised",
+          "Known implementation timeframe" = "known_implementation_period_harmonised",
+          "Eligibility" = "eligibility_harmonised",
+          "Implementation" = "implementation_harmonised",
+          "Application" = "application_harmonised",
+          "Compensation" = "compensation_harmonised",
+          "Diagnostic method" = "diagnostic_method_harmonised",
+          "Uptake" = "uptake_harmonised",
+          "Recruitment site" = "recruitment_site_harmonised",
+          "Notes" = "note_harmonised",
+          "Source" = "citation_str_harmonised"
+        ))) %>%
+        dplyr::select(
+          Expand,
+          Country,
+          Availability,
+          `Known implementation timeframe`,
+          Eligibility,
+          Implementation,
+          Application,
+          Compensation,
+          `Diagnostic method`,
+          Uptake,
+          `Recruitment site`,
+          Notes,
+          Source,
+          geo_admin0
+        )
+
+      key_col_idx = which(names(df) == "geo_admin0") - 1L
+
       table_widget = datatable(df,
         selection = "multiple",
         filter = "top",
+        escape = FALSE,
+        rownames = FALSE,
         options = list(
           pageLength = 10,
           lengthChange = FALSE,
           scrollX = FALSE,
-          initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df)), auto_unbox = TRUE)),
+          initComplete = JS(sprintf(
+            "function(settings, json) {
+               var api = this.api();
+               var detailsByCountry = %s;
+               var keyCol = %d;
+               api.table().container().addEventListener('click', function(evt) {
+                 var cell = evt.target.closest('td.dt-control');
+                 if (!cell) { return; }
+                 var tr = cell.closest('tr');
+                 var row = api.row(tr);
+                 if (!row || !row.length) { return; }
+                 if (row.child.isShown()) {
+                   row.child.hide();
+                   tr.classList.remove('shown');
+                   cell.innerHTML = '<span style=font-weight:700;>+</span>';
+                 } else {
+                   var rowData = row.data();
+                   var key = String(rowData[keyCol]);
+                   var childHtml = detailsByCountry[key] || '<div class=\"px-2 py-1 text-muted\">No individual entries available.</div>';
+                   row.child(childHtml).show();
+                   tr.classList.add('shown');
+                   cell.innerHTML = '<span style=font-weight:700;>-</span>';
+                 }
+               });
+             }",
+            details_by_country_json,
+            key_col_idx
+          )),
           rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
-          columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
+          columnDefs = list(
+            list(orderable = FALSE, className = "dt-control", targets = 0),
+            list(visible = FALSE, targets = key_col_idx)
+          )
         ),
         class = "stripe hover cell-border"
       )
@@ -2195,9 +2348,9 @@ server = function(input, output, session) {
           stop("No healthcare polygons available for PNG export.")
         }
 
-        availability_levels = levels(hcp_sf$availability)
+        availability_levels = levels(hcp_sf$availability_harmonised)
         if (is.null(availability_levels) || length(availability_levels) == 0) {
-          availability_levels = unique(as.character(hcp_sf$availability))
+          availability_levels = unique(as.character(hcp_sf$availability_harmonised))
         }
         availability_levels = availability_levels[!is.na(availability_levels) & nzchar(availability_levels)]
         # Keep export colors aligned with the interactive Leaflet palette.
@@ -2214,7 +2367,7 @@ server = function(input, output, session) {
 
         hcp_sf = hcp_sf %>%
           mutate(
-            Availability_norm = as.character(availability),
+            Availability_norm = as.character(availability_harmonised),
             Availability_norm = factor(Availability_norm, levels = availability_levels)
           )
 
@@ -2462,20 +2615,23 @@ server = function(input, output, session) {
         df = SubsetHCP %>%
           mutate(Country = adm0_lookup$Region[idx0]) %>%
           dplyr::select(any_of(c(
-            "Country", "availability", "timeframe", "known_implementation_period",
-            "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
-            "recruitment_site", "note", "citation_str"
+            "Country", "availability_harmonised", "known_implementation_period_harmonised",
+            "eligibility_harmonised", "implementation_harmonised", "application_harmonised",
+            "compensation_harmonised", "diagnostic_method_harmonised", "uptake_harmonised",
+            "recruitment_site_harmonised", "note_harmonised", "citation_str_harmonised"
           ))) %>%
           dplyr::rename(any_of(c(
-            "Availability" = "availability",
-            "Study period" = "timeframe", "Eligibility" = "eligibility",
-            "Known implementation timeframe" = "known_implementation_period",
-            "Implementation" = "implementation",
-            "Application" = "application",
-            "Compensation" = "compensation",
-            "Diagnostic method" = "diagnostic_method", "Uptake" = "uptake",
-            "Recruitment site" = "recruitment_site",
-            "Notes" = "note", "Source" = "citation_str"
+            "Availability (harmonised)" = "availability_harmonised",
+            "Known implementation timeframe (harmonised)" = "known_implementation_period_harmonised",
+            "Eligibility (harmonised)" = "eligibility_harmonised",
+            "Implementation (harmonised)" = "implementation_harmonised",
+            "Application (harmonised)" = "application_harmonised",
+            "Compensation (harmonised)" = "compensation_harmonised",
+            "Diagnostic method (harmonised)" = "diagnostic_method_harmonised",
+            "Uptake (harmonised)" = "uptake_harmonised",
+            "Recruitment site (harmonised)" = "recruitment_site_harmonised",
+            "Notes (harmonised)" = "note_harmonised",
+            "Source (harmonised)" = "citation_str_harmonised"
           )))
         write.csv(df, file, row.names = FALSE)
         return(invisible(NULL))
@@ -2523,22 +2679,23 @@ server = function(input, output, session) {
       if (is_hcp_mode()) {
         hcp_sf = build_hcp_export_sf() %>%
           dplyr::select(any_of(c(
-            "Country", "availability", "timeframe", "known_implementation_period",
-            "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
-            "recruitment_site", "note", "citation_str", "geom"
+            "Country", "availability_harmonised", "known_implementation_period_harmonised",
+            "eligibility_harmonised", "implementation_harmonised", "application_harmonised",
+            "compensation_harmonised", "diagnostic_method_harmonised", "uptake_harmonised",
+            "recruitment_site_harmonised", "note_harmonised", "citation_str_harmonised", "geom"
           ))) %>%
           dplyr::rename(any_of(c(
-            "Study period" = "timeframe",
-            "Known implementation timeframe" = "known_implementation_period",
-            "Eligibility" = "eligibility",
-            "Implementation" = "implementation",
-            "Application" = "application",
-            "Compensation" = "compensation",
-            "Diagnostic method" = "diagnostic_method",
-            "Uptake" = "uptake",
-            "Recruitment site" = "recruitment_site",
-            "Notes" = "note",
-            "Source" = "citation_str"
+            "Availability (harmonised)" = "availability_harmonised",
+            "Known implementation timeframe (harmonised)" = "known_implementation_period_harmonised",
+            "Eligibility (harmonised)" = "eligibility_harmonised",
+            "Implementation (harmonised)" = "implementation_harmonised",
+            "Application (harmonised)" = "application_harmonised",
+            "Compensation (harmonised)" = "compensation_harmonised",
+            "Diagnostic method (harmonised)" = "diagnostic_method_harmonised",
+            "Uptake (harmonised)" = "uptake_harmonised",
+            "Recruitment site (harmonised)" = "recruitment_site_harmonised",
+            "Notes (harmonised)" = "note_harmonised",
+            "Source (harmonised)" = "citation_str_harmonised"
           )))
         if (is.null(hcp_sf) || nrow(hcp_sf) == 0) {
           stop("No healthcare polygons available for GeoJSON export.")
@@ -2591,22 +2748,23 @@ server = function(input, output, session) {
       if (is_hcp_mode()) {
         hcp_sf = build_hcp_export_sf() %>%
           dplyr::select(any_of(c(
-            "Country", "availability", "timeframe", "known_implementation_period",
-            "eligibility", "implementation", "application", "compensation", "diagnostic_method", "uptake",
-            "recruitment_site", "note", "citation_str", "geom"
+            "Country", "availability_harmonised", "known_implementation_period_harmonised",
+            "eligibility_harmonised", "implementation_harmonised", "application_harmonised",
+            "compensation_harmonised", "diagnostic_method_harmonised", "uptake_harmonised",
+            "recruitment_site_harmonised", "note_harmonised", "citation_str_harmonised", "geom"
           ))) %>%
           dplyr::rename(any_of(c(
-            "Study period" = "timeframe",
-            "Known implementation timeframe" = "known_implementation_period",
-            "Eligibility" = "eligibility",
-            "Implementation" = "implementation",
-            "Application" = "application",
-            "Compensation" = "compensation",
-            "Diagnostic method" = "diagnostic_method",
-            "Uptake" = "uptake",
-            "Recruitment site" = "recruitment_site",
-            "Notes" = "note",
-            "Source" = "citation_str"
+            "Availability (harmonised)" = "availability_harmonised",
+            "Known implementation timeframe (harmonised)" = "known_implementation_period_harmonised",
+            "Eligibility (harmonised)" = "eligibility_harmonised",
+            "Implementation (harmonised)" = "implementation_harmonised",
+            "Application (harmonised)" = "application_harmonised",
+            "Compensation (harmonised)" = "compensation_harmonised",
+            "Diagnostic method (harmonised)" = "diagnostic_method_harmonised",
+            "Uptake (harmonised)" = "uptake_harmonised",
+            "Recruitment site (harmonised)" = "recruitment_site_harmonised",
+            "Notes (harmonised)" = "note_harmonised",
+            "Source (harmonised)" = "citation_str_harmonised"
           )))
         if (is.null(hcp_sf) || nrow(hcp_sf) == 0) {
           stop("No healthcare polygons available for GPKG export.")
