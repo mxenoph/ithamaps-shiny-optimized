@@ -353,9 +353,10 @@ server = function(input, output, session) {
           )
         ),
         div(
-          class = "row g-3",
+          class = "pred-maps-grid",
+          # Row 1 col 1: predicted mean carrier prevalence
           div(
-            class = "col-12",
+            class = "",
             div(
               class = "map-card",
               div(class = "map-title", "Predicted mean carrier prevalence"),
@@ -363,8 +364,9 @@ server = function(input, output, session) {
               uiOutput("mean_legend")
             )
           ),
+          # Row 1 col 2: prediction uncertainty
           div(
-            class = "col-12",
+            class = "",
             div(
               class = "map-card",
               div(class = "map-title", "Prediction uncertainty (95% CI)"),
@@ -372,8 +374,9 @@ server = function(input, output, session) {
               uiOutput("ci95_legend_2")
             )
           ),
+          # Row 2: estimated number of carriers (full width)
           div(
-            class = "col-12",
+            class = "",
             div(
               class = "map-card",
               div(class = "map-title", "Estimated number of carriers"),
@@ -994,7 +997,7 @@ server = function(input, output, session) {
         df = df[df$Value != "" & !is.na(df$Value), ]
         table_html = paste0(
           "<div style='font-family:sans-serif; font-size:0.75em; max-width:600px;'>",
-          "<h4 style='margin-bottom:6px;'>Study details</h4>",
+          "<h4 style='margin-bottom:6px;'>Selected study details</h4>",
           "<table style='width:100%; border-collapse:collapse; border: 1px solid #ddd;'>",
           paste(apply(df, 1, function(row) {
             sprintf(

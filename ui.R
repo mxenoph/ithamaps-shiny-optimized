@@ -144,7 +144,9 @@ ui = fluidPage(
                                  .raster-legend-title {font-weight: 600; margin-bottom: 0.35rem; text-align: center;}
                                  .raster-legend-bar {height: 14px; border-radius: 4px; border: 1px solid #bbb;}
                                  .raster-legend-labels {display: flex; justify-content: space-between; margin-top: 0.25rem; font-size: 0.75rem;}
-                                 .download-row {margin-top: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}")),
+                                 .download-row {margin-top: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}
+                                 .pred-maps-grid {display: grid; grid-template-columns: 1fr; gap: 1rem;}
+                                 @media (min-width: 1200px) { .pred-maps-grid { grid-template-columns: repeat(3, 1fr); } }")),
   uiOutput("timing_panel"),
   uiOutput("main_content")
 )
