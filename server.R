@@ -1071,7 +1071,7 @@ server = function(input, output, session) {
   # Fix: for each map, move its popup pane to be a direct sibling of the
   # controls (child of leaflet-container) and mirror the map pane's transform
   # so popup lat/lng positions remain correct during pan/zoom.
-  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; var mapPane = map.getPane('mapPane'); var popupPane = map.getPane('popupPane'); var container = map.getContainer(); if (mapPane && popupPane && popupPane.parentNode !== container) { container.appendChild(popupPane); popupPane.style.zIndex = '1100'; var syncPopupPane = function() { var pos = L.DomUtil.getPosition(mapPane); if (pos) { L.DomUtil.setPosition(popupPane, pos); } }; map.on('move zoom viewreset', syncPopupPane); syncPopupPane(); } function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});}); maps.forEach(function(m) { var pane = m.getPane('popupPane'); if (!pane) { return; } pane.addEventListener('click', function(e) { var el = e.target; var isClose = false; while (el && el !== pane) { if (el.classList && el.classList.contains('leaflet-popup-close-button')) { isClose = true; break; } el = el.parentNode; } if (!isClose) { return; } if (window.syncedPopupClosing) { return; } window.syncedPopupClosing = true; maps.forEach(function(other) { if (other !== m) { var toRemove = []; other.eachLayer(function(layer) { if (layer instanceof L.Popup) { toRemove.push(layer); } }); toRemove.forEach(function(p) { other.removeLayer(p); }); other.closePopup(); } }); window.syncedPopupClosing = false; if (window.Shiny) { Shiny.setInputValue('prediction_popup_closed', (new Date()).getTime(), {priority: 'event'}); } }, true); }); var syncingLayers = false; var predGroupName = 'Priority Sites for Epidemiological Surveillance'; maps.forEach(function(source) { source.on('overlayadd overlayremove', function(e) { if (syncingLayers || e.name !== predGroupName) return; syncingLayers = true; var adding = (e.type === 'overlayadd'); maps.forEach(function(target) { if (target === source) return; target.getContainer().querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) { var span = label.querySelector('span'); if (span && span.textContent.trim() === predGroupName) { var cb = label.querySelector('input[type=checkbox]'); if (cb && cb.checked !== adding) { cb.click(); } } }); }); syncingLayers = false; }); });} initialiseSync();}"
+  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; var mapPane = map.getPane('mapPane'); var popupPane = map.getPane('popupPane'); var container = map.getContainer(); if (mapPane && popupPane && popupPane.parentNode !== container) { container.appendChild(popupPane); popupPane.style.zIndex = '1100'; var syncPopupPane = function() { var pos = L.DomUtil.getPosition(mapPane); if (pos) { L.DomUtil.setPosition(popupPane, pos); } }; map.on('move zoom viewreset', syncPopupPane); syncPopupPane(); } function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});}); maps.forEach(function(m) { var pane = m.getPane('popupPane'); if (!pane) { return; } pane.addEventListener('click', function(e) { var el = e.target; var isClose = false; while (el && el !== pane) { if (el.classList && el.classList.contains('leaflet-popup-close-button')) { isClose = true; break; } el = el.parentNode; } if (!isClose) { return; } if (window.syncedPopupClosing) { return; } window.syncedPopupClosing = true; maps.forEach(function(other) { if (other !== m) { var toRemove = []; other.eachLayer(function(layer) { if (layer instanceof L.Popup) { toRemove.push(layer); } }); toRemove.forEach(function(p) { other.removeLayer(p); }); other.closePopup(); } }); window.syncedPopupClosing = false; if (window.Shiny) { Shiny.setInputValue('prediction_popup_closed', (new Date()).getTime(), {priority: 'event'}); } }, true); }); var syncingLayers = false; var predGroupName = 'Priority Sites for Epidemiological Surveillance'; maps.forEach(function(source) { source.on('overlayadd overlayremove', function(e) { if (syncingLayers || e.name !== predGroupName) return; syncingLayers = true; var adding = (e.type === 'overlayadd'); maps.forEach(function(target) { if (target === source) return; target.getContainer().querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) { var span = label.querySelector('span'); if (span && span.textContent.trim() === predGroupName) { var cb = label.querySelector('input[type=checkbox]'); if (cb && cb.checked !== adding) { cb.click(); } } }); }); syncingLayers = false; }); }); maps.forEach(function(source) { source.getContainer().addEventListener('click', function() { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); source.scrollWheelZoom.enable(); }); }); document.addEventListener('click', function(e) { if (!maps.some(function(m) { return m.getContainer().contains(e.target); })) { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); } });} initialiseSync();}"
 
   cluster_hover_js = function(default_fill, default_stroke) {
     paste(
@@ -1219,6 +1219,14 @@ server = function(input, output, session) {
   # progress bar and reports the browser-observed total (server compute +
   # serialization + websocket transfer + client render) back to the server so
   # the timing panel can show the real wall-clock the user waits for.
+  scroll_zoom_js = "function(el, x) {
+    var map = this;
+    el.addEventListener('click', function() { map.scrollWheelZoom.enable(); });
+    document.addEventListener('click', function(e) {
+      if (!el.contains(e.target)) { map.scrollWheelZoom.disable(); }
+    });
+  }"
+
   map_ready_js = "function(el, x) {
     try {
       var loader = document.getElementById('ithamaps_map_loader');
@@ -1442,6 +1450,8 @@ server = function(input, output, session) {
         group = "Priority Sites for Epidemiological Surveillance"
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
+      #  pseudoFullscreen = TRUE — this expands the map to fill the viewport using CSS (position fixed, 100% width/height) instead of calling the native API, so it works inside iframes with no policy issues
+      addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1461,6 +1471,8 @@ server = function(input, output, session) {
         group = "Priority Sites for Epidemiological Surveillance"
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
+      #  pseudoFullscreen = TRUE — this expands the map to fill the viewport using CSS (position fixed, 100% width/height) instead of calling the native API, so it works inside iframes with no policy issues
+      addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1486,6 +1498,8 @@ server = function(input, output, session) {
         group = "Priority Sites for Epidemiological Surveillance"
       ) %>%
       addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
+      #  pseudoFullscreen = TRUE — this expands the map to fill the viewport using CSS (position fixed, 100% width/height) instead of calling the native API, so it works inside iframes with no policy issues
+      addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1615,6 +1629,8 @@ server = function(input, output, session) {
           opacity = map_fill_opacity,
           position = "bottomright"
         ) %>%
+        addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+        htmlwidgets::onRender(scroll_zoom_js) %>%
         htmlwidgets::onRender(map_ready_js)
       perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(map_widget)
@@ -1723,6 +1739,8 @@ server = function(input, output, session) {
     }
 
     map_widget = map_widget %>%
+      addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+      htmlwidgets::onRender(scroll_zoom_js) %>%
       htmlwidgets::onRender(cluster_hover_js("black", "white")) %>%
       htmlwidgets::onRender(map_ready_js)
 

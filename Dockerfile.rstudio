@@ -14,7 +14,7 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list && \
 
 # Same R package set as Dockerfile (ithamaps-shiny), so global.R behaves
 # identically when sourced interactively here.
-RUN R -e "options(Ncpus = max(1L, parallel::detectCores(logical = TRUE) - 2L)); install.packages(c('DT', 'sf', 'dplyr', 'bslib', 'shiny', 'readxl', 'stringr', 'metafor', 'leaflet', 'viridis', 'ggplot2', 'RMariaDB', 'raster', 'webshot2', 'shinycssloaders', 'zip', 'box', 'future', 'future.apply', 'ragg', 'jsonlite'))"
+RUN R -e "options(Ncpus = max(1L, parallel::detectCores(logical = TRUE) - 2L)); install.packages(c('DT', 'sf', 'dplyr', 'tidyr',  'bslib', 'shiny', 'readxl', 'stringr', 'metafor', 'leaflet', 'leaflet.extras', 'viridis', 'ggplot2', 'RMariaDB', 'raster', 'webshot2', 'shinycssloaders', 'zip', 'box', 'future', 'future.apply', 'ragg', 'jsonlite', 'mapview'))"
 
 # Same connection env vars as Dockerfile — override at runtime, never bake values in.
 ENV ITHAMAPS_MACHINE=docker \
