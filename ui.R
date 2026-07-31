@@ -146,7 +146,7 @@ ui = fluidPage(
                                  .raster-legend-labels {display: flex; justify-content: space-between; margin-top: 0.25rem; font-size: 0.75rem;}
                                  .download-row {margin-top: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}
                                  .pred-maps-grid {display: grid; grid-template-columns: 1fr; gap: 1rem;}
-                                 @media (min-width: 1200px) { .pred-maps-grid { grid-template-columns: repeat(3, 1fr); } }")),
+                                 @media (min-width: 1360px) { .pred-maps-grid { grid-template-columns: repeat(3, 1fr); } }")),
   uiOutput("timing_panel"),
   uiOutput("main_content")
 )
