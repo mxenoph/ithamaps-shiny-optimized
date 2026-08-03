@@ -17,6 +17,7 @@ services:
       - ITHAMAPS_DB_PORT=3306
       - DB_USER_FILE=/run/secrets/db_user
       - DB_PASSWORD_FILE=/run/secrets/db_password
+      - ITHAMAPS_DEBUG_MODE=false
       # Enable startup parallel cache rebuild in global.R when cache files are
       # missing/stale/invalid. Auto-detects cores — falls back to sequential on
       # single-core machines, uses parallel on multi-core machines.

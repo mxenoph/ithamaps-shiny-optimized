@@ -3093,6 +3093,7 @@ server = function(input, output, session) {
   })
 
   output$timing_panel = renderUI({
+    if (!isTRUE(ithamaps_debug_mode)) return(NULL)
     timings = timing_info_r()
     if (length(timings) == 0) {
       raw_qs = session$clientData$url_search %||% ""
