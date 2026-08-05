@@ -102,6 +102,11 @@ ui = fluidPage(
         });
       }
 
+      // Expose globally so prediction sync_js can trigger a resize once all
+      // 3 Leaflet maps have initialised (which may be after the 2s timeout on
+      // slow servers).
+      window.__ithamapsPostHeight = schedulePostHeight;
+
       // Delay initial resize posts so Leaflet panes finish initialising
       // before the iframe height change triggers a map.getBounds() call.
       setTimeout(schedulePostHeight, 800);
