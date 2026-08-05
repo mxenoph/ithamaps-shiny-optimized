@@ -56,9 +56,13 @@ ui = fluidPage(
 
       // Re-measure after every DOM mutation so nested uiOutputs that render
       // after shiny:idle don't leave the iframe sized to a stale height.
+      // Deferred to DOMContentLoaded because document.body is null while the
+      // script executes inside <head>.
       if (window.MutationObserver) {
-        new MutationObserver(schedulePostHeight)
-          .observe(document.body, { childList: true, subtree: true });
+        $(function() {
+          new MutationObserver(schedulePostHeight)
+            .observe(document.body, { childList: true, subtree: true });
+        });
       }
 
       // Receive a query-update from the parent Joomla page.  The parent sends
