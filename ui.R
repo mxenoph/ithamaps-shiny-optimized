@@ -19,13 +19,12 @@ ui = fluidPage(
 
       function currentHeight() {
         var body = document.body;
-        var html = document.documentElement;
-        return Math.max(
-          body ? body.scrollHeight : 0,
-          html ? html.scrollHeight : 0,
-          body ? body.offsetHeight : 0,
-          html ? html.offsetHeight : 0
-        );
+        if (!body) return 0;
+        // html.scrollHeight / html.offsetHeight are always >= the iframe viewport
+        // height, so they prevent the iframe from ever shrinking below its current
+        // size.  Measure body only: body.scrollHeight reflects true content height.
+        var bcrBottom = Math.ceil(body.getBoundingClientRect().bottom + (window.scrollY || 0));
+        return Math.max(bcrBottom, body.scrollHeight, body.offsetHeight);
       }
 
       function postHeight() {
@@ -33,7 +32,7 @@ ui = fluidPage(
           return;
         }
         var nextHeight = currentHeight();
-        if (!nextHeight || nextHeight < 200) {
+        if (!nextHeight || nextHeight < 100) {
           return;
         }
         if (Math.abs(nextHeight - lastPostedHeight) < 12) {
@@ -54,6 +53,30 @@ ui = fluidPage(
 
       $(document).on('shiny:connected shiny:idle', schedulePostHeight);
       $(window).on('load', schedulePostHeight);
+
+      // Re-measure after every DOM mutation so nested uiOutputs that render
+      // after shiny:idle don't leave the iframe sized to a stale height.
+      if (window.MutationObserver) {
+        new MutationObserver(schedulePostHeight)
+          .observe(document.body, { childList: true, subtree: true });
+      }
+
+      // Receive a query-update from the parent Joomla page.  The parent sends
+      // this instead of changing the iframe src so the Shiny session is reused
+      // (no full reload).  The parent also updates the browser URL via
+      // history.pushState so the search remains shareable.
+      window.addEventListener('message', function(event) {
+        var data = event.data;
+        if (typeof data === 'string') {
+          try { data = JSON.parse(data); } catch (e) { return; }
+        }
+        if (!data || data.type !== 'ithamaps-query-update') { return; }
+        var qs = (data.queryString != null) ? String(data.queryString) : '';
+        if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
+          Shiny.setInputValue('injected_query', qs, {priority: 'event'});
+        }
+        schedulePostHeight();
+      });
 
       if (window.Shiny && Shiny.addCustomMessageHandler) {
         Shiny.addCustomMessageHandler('ithamaps-resize-iframe', function(message) {
@@ -147,6 +170,7 @@ ui = fluidPage(
                                  .download-row {margin-top: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}
                                  .pred-maps-grid {display: grid; grid-template-columns: 1fr; gap: 1rem;}
                                  @media (min-width: 1360px) { .pred-maps-grid { grid-template-columns: repeat(3, 1fr); } }")),
+
   uiOutput("timing_panel"),
   uiOutput("main_content")
 )

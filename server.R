@@ -166,9 +166,19 @@ server = function(input, output, session) {
     ignoreInit = FALSE
   )
 
+  # Unified query-string source: prefer a query injected via postMessage from the
+  # parent Joomla page (input$injected_query) over the iframe's own URL params.
+  # This lets the parent update the Shiny app without reloading the iframe while
+  # still supporting shared links (first load always reads from url_search).
+  active_url_search_r = reactive({
+    iq = input$injected_query %||% NULL
+    if (!is.null(iq) && nzchar(trimws(iq))) trimws(iq)
+    else (session$clientData$url_search %||% "")
+  })
+
   # Build data bundle from the current URL query string
   query_bundle = reactive({
-    raw_qs = session$clientData$url_search %||% ""
+    raw_qs = active_url_search_r()
     fetch_start = proc.time()[["elapsed"]]
     bundle = build_query_bundle_cached(raw_qs)
     bundle$timings = bundle$timings %||% list()
@@ -262,15 +272,37 @@ server = function(input, output, session) {
     }
   })
 
-  # Debounced view of filtered_data used only for the (expensive) full map
+  # Stable view of filtered_data used only for the (expensive) full map
   # re-render. DT emits input$data_table_rows_all asynchronously after the table
-  # first draws and again on every redraw, which would otherwise re-execute
-  # renderLeaflet several times in quick succession at startup (visible as the
-  # map greying out / reloading a couple of times). Debouncing collapses those
-  # rapid, often identical, invalidations into a single render. Selection
-  # mapping and downloads still read the live filtered_data()/rows_all, so their
-  # behaviour is unchanged.
-  map_filtered_data = debounce(filtered_data, 300)
+  # first draws and again on every redraw. A simple debounce is not sufficient
+  # because DT initialisation often takes longer than the debounce window, so two
+  # separate renders fire. Instead we use a reactiveVal that is only updated when
+  # the effective filter actually changes: the transition from rows_all = NULL
+  # (before DT initialises) to rows_all = [1:N] (unfiltered DT) produces the
+  # same data as the base subset, so we skip the update and avoid the second
+  # renderLeaflet execution. Selection mapping and downloads still read the live
+  # filtered_data()/rows_all, so their behaviour is unchanged.
+  map_filtered_data = reactiveVal(NULL)
+
+  observe({
+    req(!is_prediction_mode())
+    req(data_available())
+    base = if (is_hcp_mode()) SubsetHCP_r() else SubsetE_r()
+    rows_all = input$data_table_rows_all
+    is_unfiltered = is.null(rows_all) || length(rows_all) == nrow(base)
+    current = isolate(map_filtered_data())
+    # Skip when both old and new state are "unfiltered" with the same base size:
+    # this is exactly the NULL → [1:N] startup transition that caused the double render.
+    if (!is.null(current) &&
+        is_unfiltered &&
+        isTRUE(attr(current, "ithamaps_unfiltered")) &&
+        nrow(current) == nrow(base)) {
+      return()
+    }
+    new_data = if (is_unfiltered) base else base[rows_all, ]
+    attr(new_data, "ithamaps_unfiltered") = is_unfiltered
+    map_filtered_data(new_data)
+  })
 
 
   selected_marker_idx = reactiveVal(NULL)
@@ -505,7 +537,7 @@ server = function(input, output, session) {
   })
 
   selected_parameters_r = reactive({
-    raw_qs = session$clientData$url_search %||% ""
+    raw_qs = active_url_search_r()
     Query = Extract(Parse(raw_qs))
 
     if (length(Query) == 0) {
@@ -2145,7 +2177,7 @@ server = function(input, output, session) {
     bounds = input$map_bounds
     bounds_key = if (is.null(bounds)) "no-bounds" else paste(bounds$west, bounds$east, bounds$south, bounds$north, sep = "|")
     cache_key = paste(
-      normalize_query_string(session$clientData$url_search %||% ""),
+      normalize_query_string(active_url_search_r()),
       agg_level,
       bounds_key,
       nrow(SubsetG),
@@ -3096,7 +3128,7 @@ server = function(input, output, session) {
     if (!isTRUE(ithamaps_debug_mode)) return(NULL)
     timings = timing_info_r()
     if (length(timings) == 0) {
-      raw_qs = session$clientData$url_search %||% ""
+      raw_qs = active_url_search_r()
       return(div(
         class = "alert alert-secondary perf-panel",
         strong("Performance timings"),
