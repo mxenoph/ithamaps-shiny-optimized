@@ -1105,10 +1105,16 @@ server = function(input, output, session) {
   # so popup lat/lng positions remain correct during pan/zoom.
   sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; var mapPane = map.getPane('mapPane'); var popupPane = map.getPane('popupPane'); var container = map.getContainer(); if (mapPane && popupPane && popupPane.parentNode !== container) { container.appendChild(popupPane); popupPane.style.zIndex = '1100'; var syncPopupPane = function() { var pos = L.DomUtil.getPosition(mapPane); if (pos) { L.DomUtil.setPosition(popupPane, pos); } }; map.on('move zoom viewreset', syncPopupPane); syncPopupPane(); } function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; if (window.__ithamapsPostHeight) { window.__ithamapsPostHeight(); } var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});}); maps.forEach(function(m) { var pane = m.getPane('popupPane'); if (!pane) { return; } pane.addEventListener('click', function(e) { var el = e.target; var isClose = false; while (el && el !== pane) { if (el.classList && el.classList.contains('leaflet-popup-close-button')) { isClose = true; break; } el = el.parentNode; } if (!isClose) { return; } if (window.syncedPopupClosing) { return; } window.syncedPopupClosing = true; maps.forEach(function(other) { if (other !== m) { var toRemove = []; other.eachLayer(function(layer) { if (layer instanceof L.Popup) { toRemove.push(layer); } }); toRemove.forEach(function(p) { other.removeLayer(p); }); other.closePopup(); } }); window.syncedPopupClosing = false; if (window.Shiny) { Shiny.setInputValue('prediction_popup_closed', (new Date()).getTime(), {priority: 'event'}); } }, true); }); var syncingLayers = false; var predGroupName = 'Priority Sites for Epidemiological Surveillance'; maps.forEach(function(source) { source.on('overlayadd overlayremove', function(e) { if (syncingLayers || e.name !== predGroupName) return; syncingLayers = true; var adding = (e.type === 'overlayadd'); maps.forEach(function(target) { if (target === source) return; target.getContainer().querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) { var span = label.querySelector('span'); if (span && span.textContent.trim() === predGroupName) { var cb = label.querySelector('input[type=checkbox]'); if (cb && cb.checked !== adding) { cb.click(); } } }); }); syncingLayers = false; }); }); maps.forEach(function(source) { source.getContainer().addEventListener('click', function() { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); source.scrollWheelZoom.enable(); }); }); document.addEventListener('click', function(e) { if (!maps.some(function(m) { return m.getContainer().contains(e.target); })) { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); } });} initialiseSync();}"
 
-  cluster_hover_js = function(default_fill, default_stroke) {
+  cluster_hover_js = function(default_fill, default_stroke, show_cluster_count = TRUE) {
     paste(
       "function(el, x) {",
       "  var map = this;",
+      "  var showClusterCount = ", tolower(as.character(show_cluster_count)), ";",
+      "  if (!document.getElementById('ithamaps-cluster-css')) {",
+      "    var s = document.createElement('style'); s.id = 'ithamaps-cluster-css';",
+      "    s.textContent = '.ithamaps-cluster-icon{transition:transform 0.15s ease;transform-origin:center;}' +",
+      "      '.leaflet-marker-icon:hover .ithamaps-cluster-icon{transform:scale(1.6);}'; document.head.appendChild(s);",
+      "  }",
       "  var selectedLayerId = null;",
       "  var markerClusterGroup = null;",
       "",
@@ -1126,10 +1132,13 @@ server = function(input, output, session) {
       "    if (!layer || !layer.getChildCount || !layer._icon) { return; }",
       "    var count = layer.getChildCount();",
       "    var color = isSelected ? '#0000CC' : 'black';",
+      "    var size = showClusterCount ? (isSelected ? 20 : 14) : (isSelected ? 12 : 6);",
+      "    var fsize = isSelected ? '11px' : '9px';",
+      "    var countText = showClusterCount ? String(count) : '';",
       "    var icon = L.divIcon({",
-      "      html: '<div style=\"background-color:' + color + '; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:12px;\">' + count + '</div>',",
+      "      html: '<div class=\"ithamaps-cluster-icon\" style=\"background-color:' + color + '; color:white; border-radius:50%; width:' + size + 'px; height:' + size + 'px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:' + fsize + ';\">' + countText + '</div>',",
       "      className: '',",
-      "      iconSize: new L.Point(20, 20)",
+      "      iconSize: new L.Point(size, size)",
       "    });",
       "    layer.setIcon(icon);",
       "  }",
@@ -1161,13 +1170,13 @@ server = function(input, output, session) {
       "",
       "  function styleSelectedMarker(layer) {",
       "    if (!layer) { return; }",
-      "    layer.setStyle({radius: 8, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 1});",
+      "    layer.setStyle({radius: 6, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 1});",
       "    if (layer.bringToFront) { try { layer.bringToFront(); } catch (e) {} }",
       "  }",
       "",
       "  function resetMarker(layer) {",
       "    if (!layer) { return; }",
-      sprintf("    layer.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
+      sprintf("    layer.setStyle({radius: 4, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
       "  }",
       "",
       "  function isSelectedMarker(layer) {",
@@ -1215,12 +1224,12 @@ server = function(input, output, session) {
       "      }",
       "      layer.on('mouseover', function() {",
       "        if (isSelectedMarker(this)) { return; }",
-      "        this.setStyle({radius: 10, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 0.5});",
+      "        this.setStyle({radius: 6, weight: 2, color: '#0000CC', fillColor: '#0000CC', fillOpacity: 0.5});",
       "        this.bringToFront();",
       "      });",
       "      layer.on('mouseout', function() {",
       "        if (isSelectedMarker(this)) { styleSelectedMarker(this); return; }",
-      sprintf("        this.setStyle({radius: 7, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
+      sprintf("        this.setStyle({radius: 4, weight: 1, color: '%s', fillColor: '%s', fillOpacity: 1});", default_stroke, default_fill),
       "      });",
       "    }",
       "  });",
@@ -1732,7 +1741,7 @@ server = function(input, output, session) {
         weight = 1,
         fillColor = "black",
         fillOpacity = 1,
-        radius = 7,
+        radius = 3,
         clusterOptions = markerClusterOptions(
           spiderfyDistanceMultiplier = 1,
           animate = TRUE,
@@ -1790,7 +1799,8 @@ server = function(input, output, session) {
     map_widget = map_widget %>%
       addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
       htmlwidgets::onRender(scroll_zoom_js) %>%
-      htmlwidgets::onRender(cluster_hover_js("black", "white")) %>%
+      htmlwidgets::onRender(cluster_hover_js("black", "white",
+        show_cluster_count = identical(query_bundle()$query_info$Resolution %||% "", "Country-level"))) %>%
       htmlwidgets::onRender(map_ready_js)
 
     # Observation coordinates are always within the filtered region; polygon bbox spans overseas territories.
