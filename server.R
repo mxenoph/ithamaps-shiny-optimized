@@ -1736,6 +1736,7 @@ server = function(input, output, session) {
         lat = ~ as.numeric(latitude),
         lng = ~ as.numeric(longitude),
         layerId = ~ marker_layer_id,
+        group = "Studies",
         stroke = TRUE,
         color = "white",
         weight = 1,
@@ -1797,10 +1798,23 @@ server = function(input, output, session) {
     }
 
     map_widget = map_widget %>%
+      addLayersControl(
+        overlayGroups = "Studies",
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>%
       addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
       htmlwidgets::onRender(scroll_zoom_js) %>%
       htmlwidgets::onRender(cluster_hover_js("black", "white",
         show_cluster_count = identical(query_bundle()$query_info$Resolution %||% "", "Country-level"))) %>%
+      htmlwidgets::onRender("function(el, x) {
+        var map = this;
+        map.on('overlayadd', function(e) {
+          if (e.name === 'Studies') Shiny.setInputValue(el.id + '_studies_visible', true, {priority: 'event'});
+        });
+        map.on('overlayremove', function(e) {
+          if (e.name === 'Studies') Shiny.setInputValue(el.id + '_studies_visible', false, {priority: 'event'});
+        });
+      }") %>%
       htmlwidgets::onRender(map_ready_js)
 
     # Observation coordinates are always within the filtered region; polygon bbox spans overseas territories.
@@ -2258,15 +2272,26 @@ server = function(input, output, session) {
         ), crs = sf::st_crs(context_data)))
       }
 
+      # Use centroids so overseas territories don't inflate the bbox.
       bbox_source = if (!is.null(data_subset) && nrow(data_subset) > 0) data_subset else context_data
-      bbox = sf::st_bbox(bbox_source)
+      cents = tryCatch(
+        sf::st_coordinates(sf::st_centroid(suppressWarnings(sf::st_geometry(bbox_source)))),
+        error = function(e) NULL
+      )
+      bbox = if (!is.null(cents) && nrow(cents) > 0) {
+        sf::st_bbox(c(xmin = min(cents[, 1]), xmax = max(cents[, 1]),
+                      ymin = min(cents[, 2]), ymax = max(cents[, 2])),
+                    crs = sf::st_crs(bbox_source))
+      } else {
+        sf::st_bbox(bbox_source)
+      }
       x_pad = max((bbox$xmax - bbox$xmin) * 0.08, 0.25)
       y_pad = max((bbox$ymax - bbox$ymin) * 0.08, 0.25)
       sf::st_bbox(c(
-        xmin = bbox$xmin - x_pad,
-        xmax = bbox$xmax + x_pad,
-        ymin = bbox$ymin - y_pad,
-        ymax = bbox$ymax + y_pad
+        xmin = max(bbox$xmin - x_pad, -180),
+        xmax = min(bbox$xmax + x_pad,  180),
+        ymin = max(bbox$ymin - y_pad,  -90),
+        ymax = min(bbox$ymax + y_pad,   90)
       ), crs = sf::st_crs(context_data))
     }
 
@@ -2320,6 +2345,8 @@ server = function(input, output, session) {
       adm0_sel %>% mutate(label_name = Region)
     )
     export_bbox = build_export_bbox(context_polygons, SubsetG, bounds)
+    if (is.null(xlim)) xlim = c(as.numeric(export_bbox["xmin"]), as.numeric(export_bbox["xmax"]))
+    if (is.null(ylim)) ylim = c(as.numeric(export_bbox["ymin"]), as.numeric(export_bbox["ymax"]))
 
     ctx_start = proc.time()[["elapsed"]]
     context_polygons = make_plot_safe_sf(context_polygons, export_bbox)
@@ -2658,6 +2685,9 @@ server = function(input, output, session) {
         )
       }
 
+      # NULL = never toggled (default visible); FALSE = user unchecked; TRUE = user checked.
+      show_studies = !isFALSE(input$map_studies_visible)
+
       plot_build_start = proc.time()[["elapsed"]]
       p = ggplot2::ggplot()
 
@@ -2695,13 +2725,18 @@ server = function(input, output, session) {
           fontface = "bold",
           check_overlap = TRUE
         ) +
-        fill_scale +
-        ggplot2::geom_point(
+        fill_scale
+
+      if (show_studies && !is.null(pts) && nrow(pts) > 0) {
+        p = p + ggplot2::geom_point(
           data = pts,
           ggplot2::aes(x = longitude, y = latitude),
           colour = "black", fill = "black",
           shape = 21, size = 1.8, stroke = 0.4
-        ) +
+        )
+      }
+
+      p = p +
         ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
         ggplot2::theme_minimal(base_size = 11) +
         ggplot2::theme(
