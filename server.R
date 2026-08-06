@@ -1284,7 +1284,9 @@ server = function(input, output, session) {
 
   default_leaflet_options = leafletOptions(
     scrollWheelZoom = FALSE,
-    zoomControl = TRUE
+    zoomControl = TRUE,
+    zoomSnap = 0.5,
+    zoomDelta = 0.5
   )
 
   map_fill_opacity = 0.8
@@ -1664,6 +1666,21 @@ server = function(input, output, session) {
         addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
         htmlwidgets::onRender(scroll_zoom_js) %>%
         htmlwidgets::onRender(map_ready_js)
+
+      # Centroids stay within the selected region; full polygon bbox spans overseas territories.
+      cents = tryCatch(sf::st_coordinates(sf::st_centroid(suppressWarnings(sf::st_geometry(hcp_sf)))), error = function(e) NULL)
+      if (!is.null(cents) && nrow(cents) > 0) {
+        lng_pad = max(0.5, (max(cents[, 1]) - min(cents[, 1])) * 0.2)
+        lat_pad = max(0.5, (max(cents[, 2]) - min(cents[, 2])) * 0.2)
+        map_widget = map_widget %>%
+          fitBounds(
+            lng1 = max(-180, min(cents[, 1]) - lng_pad),
+            lat1 = max(-90,  min(cents[, 2]) - lat_pad),
+            lng2 = min(180,  max(cents[, 1]) + lng_pad),
+            lat2 = min(90,   max(cents[, 2]) + lat_pad)
+          )
+      }
+
       perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
       return(map_widget)
     }
@@ -1775,6 +1792,23 @@ server = function(input, output, session) {
       htmlwidgets::onRender(scroll_zoom_js) %>%
       htmlwidgets::onRender(cluster_hover_js("black", "white")) %>%
       htmlwidgets::onRender(map_ready_js)
+
+    # Observation coordinates are always within the filtered region; polygon bbox spans overseas territories.
+    coords = data %>%
+      dplyr::mutate(lat = suppressWarnings(as.numeric(latitude)),
+                    lng = suppressWarnings(as.numeric(longitude))) %>%
+      dplyr::filter(!is.na(lat), !is.na(lng))
+    if (nrow(coords) > 0) {
+      lng_pad = max(0.5, (max(coords$lng) - min(coords$lng)) * 0.2)
+      lat_pad = max(0.5, (max(coords$lat) - min(coords$lat)) * 0.2)
+      map_widget = map_widget %>%
+        fitBounds(
+          lng1 = max(-180, min(coords$lng) - lng_pad),
+          lat1 = max(-90,  min(coords$lat) - lat_pad),
+          lng2 = min(180,  max(coords$lng) + lng_pad),
+          lat2 = min(90,   max(coords$lat) + lat_pad)
+        )
+    }
 
     perf_state$map_render_secs = round(proc.time()[["elapsed"]] - render_start, 3)
     message(sprintf(
