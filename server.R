@@ -2871,6 +2871,7 @@ server = function(input, output, session) {
           ) +
           ggplot2::guides(fill = ggplot2::guide_legend(override.aes = list(colour = "black", alpha = 1))) +
           ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+          ggplot2::labs(x = "Longitude", y = "Latitude") +
           ggplot2::theme_minimal(base_size = 11) +
           ggplot2::theme(
             panel.grid = ggplot2::element_line(colour = "grey90"),
@@ -2986,6 +2987,7 @@ server = function(input, output, session) {
 
       p = p +
         ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+        ggplot2::labs(x = "Longitude", y = "Latitude") +
         ggplot2::theme_minimal(base_size = 11) +
         ggplot2::theme(
           panel.grid = ggplot2::element_line(colour = "grey90"),
