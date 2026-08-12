@@ -50,6 +50,173 @@ server = function(input, output, session) {
     flush.console()
   }
 
+  local_logo_asset_url = function() {
+    if (file.exists(file.path(getwd(), "ithanet-logo_light-background.png"))) {
+      "/ithanet-logo_light-background.png"
+    } else {
+      ""
+    }
+  }
+
+  logo_asset_url = function() {
+    override = trimws(Sys.getenv("ITHAMAPS_LOGO_URL", unset = ""))
+    if (!nzchar(override)) {
+      override = trimws(Sys.getenv("ITHANET_LOGO_URL", unset = ""))
+    }
+    if (nzchar(override)) {
+      return(override)
+    }
+
+    site_root = infer_ithanet_root()
+    if (nzchar(site_root)) {
+      site_root = sub("/+$", "", site_root)
+      site_asset = paste0(site_root, "/images/logos/ithanet-logo_light-background.png")
+      return(site_asset)
+    }
+
+    local_logo_asset_url()
+  }
+
+  logo_export_image = function() {
+    source_url = logo_asset_url()
+
+    # Try HTTP URL (substitute localhost/127.0.0.1 with host.docker.internal for Docker)
+    if (grepl("^https?://", source_url, ignore.case = TRUE)) {
+      dl_url = sub("://localhost(/|$)", "://host.docker.internal\\1", source_url)
+      dl_url = sub("://127\\.0\\.0\\.1(/|$)", "://host.docker.internal\\1", dl_url)
+      tmp_path = tempfile(fileext = ".png")
+      ok = tryCatch({
+        utils::download.file(dl_url, destfile = tmp_path, quiet = TRUE, mode = "wb")
+        file.exists(tmp_path) && file.info(tmp_path)$size > 0
+      }, error = function(e) FALSE)
+      img = if (ok) tryCatch(png::readPNG(tmp_path), error = function(e) NULL) else NULL
+      unlink(tmp_path)
+      if (!is.null(img)) return(img)
+    }
+
+    # Fallback: local copy shipped in the app directory
+    local_path = file.path(getwd(), "ithanet-logo_light-background.png")
+    if (file.exists(local_path)) {
+      tryCatch(png::readPNG(local_path), error = function(e) NULL)
+    } else {
+      NULL
+    }
+  }
+
+  # Wraps a legend title at word boundaries so no line exceeds `width` characters.
+  wrap_legend_title = function(title, width = 21) {
+    words = strsplit(title, " ")[[1]]
+    current = ""
+    lines = character(0)
+    for (w in words) {
+      candidate = if (nchar(current) == 0) w else paste(current, w)
+      if (nchar(candidate) <= width) {
+        current = candidate
+      } else {
+        lines = c(lines, current)
+        current = w
+      }
+    }
+    paste(c(lines, current), collapse = "\n")
+  }
+
+  # panel_width / panel_height must match the ggsave() dimensions for this plot panel.
+  add_logo_to_ggplot = function(p, xlim, ylim, data_sf = NULL, corner = NULL, logo_img = NULL,
+                                 panel_width = 12, panel_height = 8) {
+    img = logo_img %||% logo_export_image()
+    if (is.null(img) || length(img) == 0L) return(p)
+
+    # Determine corner: explicit override, or detect from data centroid distribution.
+    if (!is.null(corner)) {
+      use_right = identical(corner, "right")
+    } else {
+      use_right = FALSE
+      if (!is.null(data_sf) && nrow(data_sf) > 0) {
+        cents = tryCatch(
+          sf::st_coordinates(sf::st_centroid(suppressWarnings(sf::st_geometry(data_sf)))),
+          error = function(e) NULL
+        )
+        if (!is.null(cents) && nrow(cents) > 0) {
+          use_right = any(cents[, 1] < mean(xlim) & cents[, 2] > ylim[1] + 0.65 * diff(ylim))
+        }
+      }
+    }
+
+    # Logo fixed at constant physical size, aspect-ratio preserved.
+    # coord_sf (WGS84) renders 1° lon as cos(φ) visual units of 1° lat, so we correct.
+    img_asp    = ncol(img) / nrow(img)
+    center_lat = mean(ylim)
+    cos_lat    = max(cos(center_lat * pi / 180), 0.1)  # floor avoids ÷0 near poles
+    geo_asp    = diff(xlim) * cos_lat / diff(ylim)
+    panel_asp  = panel_width / panel_height
+    if (geo_asp >= panel_asp) {
+      eff_W = panel_width;  eff_H = panel_width / geo_asp
+    } else {
+      eff_H = panel_height; eff_W = panel_height * geo_asp
+    }
+    logo_h_raw = (0.45 / eff_H) * diff(ylim)
+    logo_w_raw = (0.45 * img_asp / eff_W) * diff(xlim) / cos_lat
+    pad_x_raw  = (0.18 / eff_W) * diff(xlim) / cos_lat
+    pad_y_raw  = (0.18 / eff_H) * diff(ylim)
+    # Cap so the logo never dominates a very narrow or high-latitude zoomed view.
+    scale = min(1, 0.22 * diff(xlim) / logo_w_raw, 0.18 * diff(ylim) / logo_h_raw)
+    logo_w = logo_w_raw * scale;  logo_h = logo_h_raw * scale
+    pad_x  = pad_x_raw  * scale;  pad_y  = pad_y_raw  * scale
+
+    if (use_right) {
+      xmin = xlim[2] - pad_x - logo_w;  xmax = xlim[2] - pad_x
+    } else {
+      xmin = xlim[1] + pad_x;           xmax = xlim[1] + pad_x + logo_w
+    }
+    ymax = ylim[2] - pad_y
+    ymin = ymax - logo_h
+
+    logo_box = grid::grobTree(
+      grid::roundrectGrob(gp = grid::gpar(fill = "white", col = NA, alpha = 0.85), r = grid::unit(6, "pt")),
+      grid::rasterGrob(img, interpolate = TRUE,
+        width = grid::unit(0.80, "npc"), height = grid::unit(0.80, "npc"))
+    )
+    p + ggplot2::annotation_custom(logo_box, xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax)
+  }
+
+  logo_control_html = function() {
+    tags$div(
+      class = "ithamaps-logo-control",
+      style = "background: rgba(255,255,255,0.85); border-radius: 8px; padding: 4px 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.18); line-height: 0; position: relative; z-index: 1000;",
+      tags$img(
+        src = logo_asset_url(),
+        alt = "IthaNet logo",
+        style = "display: block; max-width: 126px; max-height: 42px; width: auto; height: auto; object-fit: contain;"
+      )
+    )
+  }
+
+  add_logo_leaflet_control = function(map_widget) {
+    map_widget %>%
+      addControl(
+        html = logo_control_html(),
+        position = "topleft"
+      ) %>%
+      htmlwidgets::onRender(
+        "function(el, x) {
+          var map = this;
+          var moveLogo = function() {
+            var left = map.getContainer().querySelector('.leaflet-top.leaflet-left');
+            if (!left) return;
+            var logo = left.querySelector('.ithamaps-logo-control');
+            if (!logo) return;
+            var beforeNode = left.querySelector('.leaflet-control-zoom, .leaflet-control-fullscreen');
+            if (beforeNode && logo !== beforeNode && logo.nextElementSibling !== beforeNode) {
+              left.insertBefore(logo, beforeNode);
+            }
+            if (logo) logo.style.zIndex = '1000';
+          };
+          setTimeout(moveLogo, 0);
+          map.whenReady(moveLogo);
+        }"
+      )
+  }
+
   infer_ithanet_root = function() {
     # Optional explicit override for environments where URL inference is not
     # reliable (reverse proxies, custom ports, non-standard paths).
@@ -1103,7 +1270,7 @@ server = function(input, output, session) {
   # Fix: for each map, move its popup pane to be a direct sibling of the
   # controls (child of leaflet-container) and mirror the map pane's transform
   # so popup lat/lng positions remain correct during pan/zoom.
-  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; var mapPane = map.getPane('mapPane'); var popupPane = map.getPane('popupPane'); var container = map.getContainer(); if (mapPane && popupPane && popupPane.parentNode !== container) { container.appendChild(popupPane); popupPane.style.zIndex = '1100'; var syncPopupPane = function() { var pos = L.DomUtil.getPosition(mapPane); if (pos) { L.DomUtil.setPosition(popupPane, pos); } }; map.on('move zoom viewreset', syncPopupPane); syncPopupPane(); } function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; if (window.__ithamapsPostHeight) { window.__ithamapsPostHeight(); } var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});}); maps.forEach(function(m) { var pane = m.getPane('popupPane'); if (!pane) { return; } pane.addEventListener('click', function(e) { var el = e.target; var isClose = false; while (el && el !== pane) { if (el.classList && el.classList.contains('leaflet-popup-close-button')) { isClose = true; break; } el = el.parentNode; } if (!isClose) { return; } if (window.syncedPopupClosing) { return; } window.syncedPopupClosing = true; maps.forEach(function(other) { if (other !== m) { var toRemove = []; other.eachLayer(function(layer) { if (layer instanceof L.Popup) { toRemove.push(layer); } }); toRemove.forEach(function(p) { other.removeLayer(p); }); other.closePopup(); } }); window.syncedPopupClosing = false; if (window.Shiny) { Shiny.setInputValue('prediction_popup_closed', (new Date()).getTime(), {priority: 'event'}); } }, true); }); var syncingLayers = false; var predGroupName = 'Priority Sites for Epidemiological Surveillance'; maps.forEach(function(source) { source.on('overlayadd overlayremove', function(e) { if (syncingLayers || e.name !== predGroupName) return; syncingLayers = true; var adding = (e.type === 'overlayadd'); maps.forEach(function(target) { if (target === source) return; target.getContainer().querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) { var span = label.querySelector('span'); if (span && span.textContent.trim() === predGroupName) { var cb = label.querySelector('input[type=checkbox]'); if (cb && cb.checked !== adding) { cb.click(); } } }); }); syncingLayers = false; }); }); maps.forEach(function(source) { source.getContainer().addEventListener('click', function() { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); source.scrollWheelZoom.enable(); }); }); document.addEventListener('click', function(e) { if (!maps.some(function(m) { return m.getContainer().contains(e.target); })) { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); } });} initialiseSync();}"
+  sync_js = "function(el, x) {if (!window.syncedLeafletMaps) {window.syncedLeafletMaps = {};} var map = this; window.syncedLeafletMaps[el.id] = map; var mapPane = map.getPane('mapPane'); var popupPane = map.getPane('popupPane'); var container = map.getContainer(); if (mapPane && popupPane && popupPane.parentNode !== container) { container.appendChild(popupPane); popupPane.style.zIndex = '1100'; var syncPopupPane = function() { var pos = L.DomUtil.getPosition(mapPane); if (pos) { L.DomUtil.setPosition(popupPane, pos); } }; map.on('move zoom viewreset', syncPopupPane); syncPopupPane(); } function initialiseSync() {var mapIds = ['map_mean', 'map_ci95_2', 'map_burden']; var maps = mapIds.map(function(id) {return window.syncedLeafletMaps[id];}); if (maps.some(function(m) {return !m;})) {setTimeout(initialiseSync, 250); return;} if (window.allMapsSyncReady) {return;} window.allMapsSyncReady = true; if (window.__ithamapsPostHeight) { window.__ithamapsPostHeight(); } var syncing = false; function syncAll(source) {if (syncing) return; syncing = true; maps.forEach(function(target) {if (target !== source) {target.setView(source.getCenter(), source.getZoom(), {animate: false, reset: true});}}); syncing = false;} maps.forEach(function(m) {m.on('moveend zoomend', function() {syncAll(m);});}); maps.forEach(function(m) { var pane = m.getPane('popupPane'); if (!pane) { return; } pane.addEventListener('click', function(e) { var el = e.target; var isClose = false; while (el && el !== pane) { if (el.classList && el.classList.contains('leaflet-popup-close-button')) { isClose = true; break; } el = el.parentNode; } if (!isClose) { return; } if (window.syncedPopupClosing) { return; } window.syncedPopupClosing = true; maps.forEach(function(other) { if (other !== m) { var toRemove = []; other.eachLayer(function(layer) { if (layer instanceof L.Popup) { toRemove.push(layer); } }); toRemove.forEach(function(p) { other.removeLayer(p); }); other.closePopup(); } }); window.syncedPopupClosing = false; if (window.Shiny) { Shiny.setInputValue('prediction_popup_closed', (new Date()).getTime(), {priority: 'event'}); } }, true); }); var syncingLayers = false; var predGroupName = 'Priority monitoring sites'; maps.forEach(function(source) { source.on('overlayadd overlayremove', function(e) { if (syncingLayers || e.name !== predGroupName) return; syncingLayers = true; var adding = (e.type === 'overlayadd'); maps.forEach(function(target) { if (target === source) return; target.getContainer().querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) { var span = label.querySelector('span'); if (span && span.textContent.trim() === predGroupName) { var cb = label.querySelector('input[type=checkbox]'); if (cb && cb.checked !== adding) { cb.click(); } } }); }); syncingLayers = false; }); }); maps.forEach(function(source) { source.getContainer().addEventListener('click', function() { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); source.scrollWheelZoom.enable(); }); }); document.addEventListener('click', function(e) { if (!maps.some(function(m) { return m.getContainer().contains(e.target); })) { maps.forEach(function(m) { m.scrollWheelZoom.disable(); }); } });} initialiseSync();}"
 
   cluster_hover_js = function(default_fill, default_stroke, show_cluster_count = TRUE) {
     paste(
@@ -1415,11 +1582,23 @@ server = function(input, output, session) {
   current_prediction_extent = reactive({
     assets = prediction_data_r()
     req(!is.null(assets))
-    bounds = input$map_mean_bounds
-    if (is.null(bounds)) {
-      return(raster::extent(assets$Mean))
+    full_ext = raster::extent(assets$Mean)
+    bounds   = input$map_mean_bounds
+    if (is.null(bounds)) return(full_ext)
+    user_ext  = raster::extent(bounds$west, bounds$east, bounds$south, bounds$north)
+    lon_full  = full_ext@xmax - full_ext@xmin
+    lat_full  = full_ext@ymax - full_ext@ymin
+    # Use viewport bounds only when the user has genuinely zoomed into a sub-region
+    # (both dimensions cover < 60 % of the full raster extent). On large screens the
+    # 3-column layout produces a narrow viewport without any zoom interaction; at the
+    # initial zoom level the longitude range is typically > 60 % of the full extent,
+    # so exports will default to the full raster and not the layout-constrained view.
+    if (lon_full > 0 && lat_full > 0 &&
+        (user_ext@xmax - user_ext@xmin) / lon_full < 0.6 &&
+        (user_ext@ymax - user_ext@ymin) / lat_full < 0.6) {
+      return(user_ext)
     }
-    raster::extent(bounds$west, bounds$east, bounds$south, bounds$north)
+    full_ext
   })
 
   prediction_disclaimer_html = reactive({
@@ -1488,13 +1667,25 @@ server = function(input, output, session) {
       addCircleMarkers(
         data = assets$Selected_sites,
         lng = ~lon, lat = ~lat,
-        radius = 5, color = "white", fillColor = "black",
+        radius = 5, color = "black", fillColor = "black",
         fillOpacity = 0.9, weight = 1.5,
-        group = "Priority Sites for Epidemiological Surveillance"
+        group = "Priority monitoring sites"
       ) %>%
-      addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
+      addLayersControl(overlayGroups = c("Priority monitoring sites"), options = layersControlOptions(collapsed = FALSE)) %>%
       #  pseudoFullscreen = TRUE — this expands the map to fill the viewport using CSS (position fixed, 100% width/height) instead of calling the native API, so it works inside iframes with no policy issues
       addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+      add_logo_leaflet_control() %>%
+      htmlwidgets::onRender("function(el, x) {
+        var map = this;
+        map.on('overlayadd', function(e) {
+          if (e.name === 'Priority monitoring sites' && window.Shiny)
+            Shiny.setInputValue('prediction_sites_visible', true, {priority: 'event'});
+        });
+        map.on('overlayremove', function(e) {
+          if (e.name === 'Priority monitoring sites' && window.Shiny)
+            Shiny.setInputValue('prediction_sites_visible', false, {priority: 'event'});
+        });
+      }") %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1509,13 +1700,14 @@ server = function(input, output, session) {
       addCircleMarkers(
         data = assets$Selected_sites,
         lng = ~lon, lat = ~lat,
-        radius = 5, color = "white", fillColor = "black",
+        radius = 5, color = "black", fillColor = "black",
         fillOpacity = 0.9, weight = 1.5,
-        group = "Priority Sites for Epidemiological Surveillance"
+        group = "Priority monitoring sites"
       ) %>%
-      addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
+      addLayersControl(overlayGroups = c("Priority monitoring sites"), options = layersControlOptions(collapsed = FALSE)) %>%
       #  pseudoFullscreen = TRUE — this expands the map to fill the viewport using CSS (position fixed, 100% width/height) instead of calling the native API, so it works inside iframes with no policy issues
       addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+      add_logo_leaflet_control() %>%
       htmlwidgets::onRender(sync_js)
   })
 
@@ -1534,16 +1726,37 @@ server = function(input, output, session) {
         lng = ~lon,
         lat = ~lat,
         radius = 5,
-        color = "white",
+        color = "black",
         fillColor = "black",
         fillOpacity = 0.9,
         weight = 1.5,
-        group = "Priority Sites for Epidemiological Surveillance"
+        group = "Priority monitoring sites"
       ) %>%
-      addLayersControl(overlayGroups = c("Priority Sites for Epidemiological Surveillance"), options = layersControlOptions(collapsed = FALSE)) %>%
+      addLayersControl(overlayGroups = c("Priority monitoring sites"), options = layersControlOptions(collapsed = FALSE)) %>%
       #  pseudoFullscreen = TRUE — this expands the map to fill the viewport using CSS (position fixed, 100% width/height) instead of calling the native API, so it works inside iframes with no policy issues
       addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+      add_logo_leaflet_control() %>%
       htmlwidgets::onRender(sync_js)
+  })
+
+  # Reduce marker radius by 1 on wide screens where the 3-column layout makes each map narrow.
+  observe({
+    req(is_prediction_mode())
+    assets = prediction_data_r()
+    req(!is.null(assets))
+    map_px = session$clientData$output_map_mean_width
+    radius = if (!is.null(map_px) && map_px < 550) 2.5 else 3
+    for (map_id in c("map_mean", "map_burden", "map_ci95_2")) {
+      leafletProxy(map_id) %>%
+        clearGroup("Priority monitoring sites") %>%
+        addCircleMarkers(
+          data = assets$Selected_sites,
+          lng = ~lon, lat = ~lat,
+          radius = radius, color = "black", fillColor = "black",
+          fillOpacity = 0.9, weight = 1.5,
+          group = "Priority monitoring sites"
+        )
+    }
   })
 
   last_prediction_marker_click = reactiveVal(NULL)
@@ -1673,6 +1886,7 @@ server = function(input, output, session) {
           position = "bottomright"
         ) %>%
         addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+        add_logo_leaflet_control() %>%
         htmlwidgets::onRender(scroll_zoom_js) %>%
         htmlwidgets::onRender(map_ready_js)
 
@@ -1803,6 +2017,7 @@ server = function(input, output, session) {
         options = layersControlOptions(collapsed = FALSE)
       ) %>%
       addFullscreenControl(position = "topleft", pseudoFullscreen = TRUE) %>%
+      add_logo_leaflet_control() %>%
       htmlwidgets::onRender(scroll_zoom_js) %>%
       htmlwidgets::onRender(cluster_hover_js("black", "white",
         show_cluster_count = identical(query_bundle()$query_info$Resolution %||% "", "Country-level"))) %>%
@@ -2486,39 +2701,73 @@ server = function(input, output, session) {
           error = function(e) adm0_sel
         ))
         suppressMessages(sf::sf_use_s2(prev_s2_pred))
-        adm0_bg_geom = sf::st_geometry(adm0_bg)
+        xlim = c(raster_ext@xmin, raster_ext@xmax)
+        ylim = c(raster_ext@ymin, raster_ext@ymax)
+        # NULL = never toggled (default visible); FALSE = user unchecked.
+        show_sites = !isFALSE(input$prediction_sites_visible)
 
-        # Pre-compute label positions once (centroid per country, same as curated export).
-        adm0_label_pts = suppressWarnings(sf::st_point_on_surface(adm0_bg_geom))
-        adm0_label_coords = sf::st_coordinates(adm0_label_pts)
-        adm0_label_names = adm0_bg$Region
+        # Build a ggplot2 panel matching the curated-data export style.
+        make_pred_panel = function(raster_data, colours, title, logo_img = NULL) {
+          rdf = raster::as.data.frame(raster_data, xy = TRUE)
+          names(rdf) = c("x", "y", "value")
+          rdf = rdf[!is.na(rdf$value), , drop = FALSE]
 
-        # Helper: grey background → raster → borders → country names → sites
-        plot_pred_panel = function(raster_data, colours, title) {
-          plot(adm0_bg_geom,
-               col    = "grey88",
-               border = "grey60",
-               lwd    = 0.3,
-               xlim   = c(raster_ext@xmin, raster_ext@xmax),
-               ylim   = c(raster_ext@ymin, raster_ext@ymax),
-               main   = title,
-               axes   = TRUE)
-          raster::plot(raster_data, col = colours, add = TRUE, legend = TRUE)
-          plot(adm0_bg_geom, col = NA, border = "grey60", lwd = 0.3, add = TRUE)
-          text(adm0_label_coords[, 1], adm0_label_coords[, 2],
-               labels = adm0_label_names,
-               cex = 0.45, col = "grey35")
+          in_topleft = rdf$x < mean(xlim) & rdf$y > ylim[1] + 0.65 * diff(ylim)
+          pred_corner = if (any(in_topleft)) "right" else "left"
+
+          p = ggplot2::ggplot() +
+            ggplot2::geom_sf(
+              data = adm0_bg, fill = "grey88", colour = "grey60", linewidth = 0.2, alpha = 0.95
+            ) +
+            ggplot2::geom_tile(
+              data = rdf,
+              ggplot2::aes(x = x, y = y, fill = value),
+              width  = raster::xres(raster_data),
+              height = raster::yres(raster_data)
+            ) +
+            ggplot2::scale_fill_gradientn(
+              colours  = colours, limits = range(rdf$value), na.value = NA,
+              guide    = ggplot2::guide_colorbar(
+                title = wrap_legend_title(title), title.position = "top",
+                barwidth = 0.8, barheight = 10
+              )
+            ) +
+            ggplot2::geom_sf(data = adm0_bg, fill = NA, colour = "grey60", linewidth = 0.2) +
+            ggplot2::geom_sf_text(
+              data = suppressWarnings(sf::st_point_on_surface(adm0_bg)),
+              ggplot2::aes(label = Region),
+              colour = "grey35", size = 2.2, check_overlap = TRUE
+            ) +
+            ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+            ggplot2::labs(x = "Longitude", y = "Latitude", title = title) +
+            ggplot2::theme_minimal(base_size = 11) +
+            ggplot2::theme(
+              panel.grid      = ggplot2::element_line(colour = "grey90"),
+              legend.position = "right",
+              legend.title    = ggplot2::element_text(size = 9),
+              plot.title      = ggplot2::element_text(size = 11, face = "bold")
+            )
+
+          if (!is.null(logo_img)) {
+            p = add_logo_to_ggplot(p, xlim, ylim, corner = pred_corner, logo_img = logo_img, panel_height = 6)
+          }
+          if (show_sites && nrow(sites_export) > 0) {
+            p = p + ggplot2::geom_point(
+              data = sites_export,
+              ggplot2::aes(x = lon, y = lat),
+              pch = 21, fill = "black", colour = "black", size = 0.8
+            )
+          }
+          p
         }
 
-        png(filename = file, width = 1800, height = 2700, res = 150)
-        par(mfrow = c(3, 1), mar = c(4, 4, 4, 5))
-        plot_pred_panel(mean_crop,   rev(assets$Mean_colours),   "Predicted carrier prevalence (%)")
-        points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
-        plot_pred_panel(ci95_crop,   rev(assets$CI95_colours),   "Prediction uncertainty (95% Credible Interval)")
-        points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
-        plot_pred_panel(burden_crop, rev(assets$Burden_colours), "Estimated number of carriers")
-        points(sites_export$lon, sites_export$lat, pch = 21, bg = "black", col = "white", cex = 0.8)
-        dev.off()
+        pred_logo = logo_export_image()
+        p_mean   = make_pred_panel(mean_crop,   rev(assets$Mean_colours),   "Predicted carrier prevalence (%)",                pred_logo)
+        p_ci95   = make_pred_panel(ci95_crop,   rev(assets$CI95_colours),   "Prediction uncertainty (95% Credible Interval)", pred_logo)
+        p_burden = make_pred_panel(burden_crop, rev(assets$Burden_colours), "Estimated number of carriers",                   pred_logo)
+        combined = cowplot::plot_grid(p_mean, p_ci95, p_burden, ncol = 1, align = "v")
+        ggplot2::ggsave(file, plot = combined, width = 12, height = 18, dpi = 150,
+                        device = ragg::agg_png, bg = "white")
         return(invisible(NULL))
       }
 
@@ -2600,16 +2849,15 @@ server = function(input, output, session) {
           ggplot2::geom_sf(
             data = hcp_sf,
             ggplot2::aes(fill = Availability_norm),
-            colour = "black",
+            colour = "grey60",
             linewidth = 0.2,
             alpha = map_fill_opacity
           ) +
           ggplot2::geom_sf_text(
             data = hcp_labels,
             ggplot2::aes(label = Country),
-            colour = "black",
+            colour = "grey35",
             size = 2.6,
-            fontface = "bold",
             check_overlap = TRUE
           ) +
           ggplot2::scale_fill_manual(
@@ -2629,6 +2877,7 @@ server = function(input, output, session) {
             legend.position = "right"
           )
 
+        p = add_logo_to_ggplot(p, xlim, ylim, hcp_sf)
         ggplot2::ggsave(file, plot = p, width = 12, height = 8, dpi = 150, device = ragg::agg_png, bg = "white")
         return(invisible(NULL))
       }
@@ -2713,16 +2962,15 @@ server = function(input, output, session) {
         ggplot2::geom_sf(
           data = plot_subsetg,
           fill_mapping,
-          colour = "black",
+          colour = "grey60",
           linewidth = 0.2,
           alpha = 0.8
         ) +
         ggplot2::geom_sf_text(
           data = data_labels,
           ggplot2::aes(label = data_label),
-          colour = "black",
-          size = 3,
-          fontface = "bold",
+          colour = "grey35",
+          size = 2.8,
           check_overlap = TRUE
         ) +
         fill_scale
@@ -2743,6 +2991,7 @@ server = function(input, output, session) {
           panel.grid = ggplot2::element_line(colour = "grey90"),
           legend.position = "right"
         )
+      p = add_logo_to_ggplot(p, xlim, ylim, SubsetG)
       perf_state$png_plot_build_secs = round(proc.time()[["elapsed"]] - plot_build_start, 3)
 
       tryCatch(

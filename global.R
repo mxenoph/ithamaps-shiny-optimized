@@ -35,6 +35,7 @@ library(leaflet.extras)
 library(viridis)
 library(RMariaDB)
 library(ggplot2)
+library(cowplot)
 library(webshot2)
 library(shinycssloaders)
 
