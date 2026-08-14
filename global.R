@@ -504,6 +504,8 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     longitude = as.character(longitude),
     latitude = as.character(latitude)
   ) %>%
+  # Convert all SET-derived factor columns to character before ifelse() calls.
+  mutate(across(where(is.factor), as.character)) %>%
   mutate(
     end_year_assumed = ifelse(end_year_assumed == 1, "End year of study period based on study's publication year", NA),
     timeframe = ifelse(!is.na(start_year) & !is.na(end_year), paste0(start_year, "-", end_year),

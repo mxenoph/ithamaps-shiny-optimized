@@ -2065,12 +2065,15 @@ server = function(input, output, session) {
     req(data_available())
     render_start = proc.time()[["elapsed"]]
 
-    build_filter_meta = function(df) {
+    # Single source of truth for columns hidden from view but kept in the data.
+    hidden_display_cols = c("Latitude", "Longitude", "Notes", "Source")
+
+    build_filter_meta = function(df, hidden_cols) {
       lapply(seq_along(df), function(i) {
         col_name = names(df)[i]
         col = df[[i]]
 
-        if (col_name %in% c("Latitude", "Longitude")) {
+        if (col_name %in% hidden_cols) {
           return(list(type = "native", options = character(0)))
         }
         if (is.numeric(col) || is.integer(col)) {
@@ -2085,10 +2088,10 @@ server = function(input, output, session) {
         vals = trimws(vals)
         vals = vals[!is.na(vals) & nzchar(vals)]
         vals = sort(unique(vals))
-        if (length(vals) <= 1) {
+        if (length(vals) == 0) {
           return(list(type = "native", options = character(0)))
         }
-        list(type = "select", options = unname(vals))
+        list(type = "select", options = I(unname(vals)))
       })
     }
 
@@ -2120,7 +2123,7 @@ server = function(input, output, session) {
              if (meta.type !== 'select') { return; }
 
              var column = this;
-             var $cell = $filterCells.eq(colIdx);
+             var $cell = $filterCells.eq($(this.header()).index());
              if (!$cell.length) { return; }
              var $input = $('input,select', $cell);
              if (!$input.length) { return; }
@@ -2168,12 +2171,11 @@ server = function(input, output, session) {
           filter(geo_admin0 == country_key) %>%
           mutate(Country = adm0_lookup$Region[detail_idx0]) %>%
           dplyr::select(any_of(c(
-            "hcp_entry_id", "Country", "availability", "timeframe", "eligibility",
+            "Country", "availability", "timeframe", "eligibility",
             "implementation", "application", "compensation", "diagnostic_method",
             "uptake", "recruitment_site", "note", "citation_str", "source_link"
           ))) %>%
           dplyr::rename(any_of(c(
-            "HCP Entry ID" = "hcp_entry_id",
             "Availability" = "availability",
             "Study period" = "timeframe",
             "Eligibility" = "eligibility",
@@ -2404,10 +2406,10 @@ server = function(input, output, session) {
       )
 
     requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
-    if (identical(requested_measure, "Allele frequency")) {
+    if (!identical(requested_measure, "Allele frequency")) {
       df = df %>% dplyr::select(-any_of("IthaID"))
     }
-    if (identical(requested_measure, "Relative allele frequency")) {
+    if (!identical(requested_measure, "Relative allele frequency")) {
       df = df %>% dplyr::select(-any_of("Globin phenotype"))
     }
 
@@ -2425,9 +2427,10 @@ server = function(input, output, session) {
         pageLength = 10,
         lengthChange = FALSE,
         scrollX = FALSE,
-        initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df)), auto_unbox = TRUE)),
+        initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df, hidden_display_cols)), auto_unbox = TRUE)),
         rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
-        columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% c("Notes", "Source"))))
+        # rownames=TRUE (default): row-names occupy DT index 0, so R's which() 1-based = DT column index.
+        columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% hidden_display_cols)))
       ),
       class = "stripe hover cell-border"
     )
@@ -3103,6 +3106,13 @@ server = function(input, output, session) {
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
+      requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
+      if (!identical(requested_measure, "Allele frequency")) {
+        df = df %>% dplyr::select(-any_of("IthaID"))
+      }
+      if (!identical(requested_measure, "Relative allele frequency")) {
+        df = df %>% dplyr::select(-any_of("Globin phenotype"))
+      }
       write.csv(df, file, row.names = FALSE)
     }
   )
@@ -3172,6 +3182,13 @@ server = function(input, output, session) {
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
+      requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
+      if (!identical(requested_measure, "Allele frequency")) {
+        sf_df = sf_df %>% dplyr::select(-any_of("IthaID"))
+      }
+      if (!identical(requested_measure, "Relative allele frequency")) {
+        sf_df = sf_df %>% dplyr::select(-any_of("Globin phenotype"))
+      }
       st_write(sf_df, file, driver = "GeoJSON", delete_dsn = TRUE)
     }
   )
@@ -3241,6 +3258,13 @@ server = function(input, output, session) {
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
+      requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
+      if (!identical(requested_measure, "Allele frequency")) {
+        sf_df = sf_df %>% dplyr::select(-any_of("IthaID"))
+      }
+      if (!identical(requested_measure, "Relative allele frequency")) {
+        sf_df = sf_df %>% dplyr::select(-any_of("Globin phenotype"))
+      }
       st_write(sf_df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
     }
   )
