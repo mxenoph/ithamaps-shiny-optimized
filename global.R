@@ -709,6 +709,11 @@ db_hcp_per_region = db_hcp_per_region %>%
     compensation = ifelse(compensation_comment != "NULL", paste0(compensation, " (", compensation_comment, ")"), compensation)
   ) %>%
   mutate(
+    # character columns not covered by add_explicit_na_level (which only touches factors)
+    compensation = replace_na(as.character(compensation), "Unspecified"),
+    recruitment_site = replace_na(as.character(recruitment_site), "Unspecified")
+  ) %>%
+  mutate(
     source_label = dplyr::case_when(
       !is.na(pmid) ~ str_c("PMID: ", pmid),
       is.na(pmid) & !is.na(doi) ~ str_c("DOI: ", doi),

@@ -2103,10 +2103,6 @@ server = function(input, output, session) {
            if (!Array.isArray(filterMeta)) {
              filterMeta = Object.keys(filterMeta || {}).map(function(k) { return filterMeta[k]; });
            }
-           var normalizeVals = function(v) {
-             if (v === null || v === undefined || v === '') return [];
-             return Array.isArray(v) ? v : [v];
-           };
            var $container = $(api.table().container());
            var $filterCells = $('thead tr:eq(1) td, thead tr:eq(1) th', $container);
            if ($filterCells.length === 0) {
@@ -2115,6 +2111,13 @@ server = function(input, output, session) {
            if ($filterCells.length === 0) { return; }
            var colCount = api.columns().count();
            var colOffset = (colCount === (filterMeta.length + 1)) ? 1 : 0;
+
+           // suppress the DataTables JSON.parse popup that fires when DT reads back a column-search regex value
+           if ($.fn.dataTable.ext.errMode === 'alert') {
+             $.fn.dataTable.ext.errMode = function(s, tn, msg) {
+               if (!/lexical error/i.test(msg || '')) window.alert(msg);
+             };
+           }
 
            api.columns().every(function() {
              var colIdx = this.index();
@@ -2125,10 +2128,9 @@ server = function(input, output, session) {
              var column = this;
              var $cell = $filterCells.eq($(this.header()).index());
              if (!$cell.length) { return; }
-             var $input = $('input,select', $cell);
-             if (!$input.length) { return; }
+             if (!$('input,select', $cell).length) { return; }
 
-             var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
+var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
              $select.append($('<option></option>').attr('value', '__all__').text('All'));
              $.each(meta.options || [], function(_, val) {
                $select.append($('<option></option>').attr('value', val).text(val));
@@ -2137,17 +2139,13 @@ server = function(input, output, session) {
 
              var applyFilter = function(val) {
                if (!val || val === '__all__') {
-                 column.search('', true, false).draw();
+                 column.search('', false, false).draw();
                  return;
                }
-               var escaped = $.fn.dataTable.util.escapeRegex(val);
-               column.search('^' + escaped + '$', true, false).draw();
+               column.search('^' + $.fn.dataTable.util.escapeRegex(val) + '$', true, false).draw();
              };
-
              $select.val('__all__');
-             $select.on('change', function() {
-               applyFilter($(this).val());
-             });
+             $select.on('change', function() { applyFilter($(this).val()); });
            });
          }",
         filter_meta_json
@@ -2193,8 +2191,12 @@ server = function(input, output, session) {
           return("<div class='px-2 py-1 text-muted'>No individual entries available.</div>")
         }
 
+        if ("Implementation" %in% names(details_df)) {
+          details_df[["Implementation"]] = tools::toTitleCase(tolower(as.character(details_df[["Implementation"]])))
+        }
+
         details_df = details_df %>%
-          mutate(across(everything(), ~ htmltools::htmlEscape(as.character(.x))))
+          mutate(across(everything(), ~ htmltools::htmlEscape(replace_na(as.character(.x), "Unspecified"))))
 
         if ("source_link" %in% names(details_df)) {
           details_df[["Source"]] = ifelse(
@@ -2279,9 +2281,12 @@ server = function(input, output, session) {
           Notes,
           Source,
           geo_admin0
-        )
+        ) %>%
+        mutate(across(where(is.factor), as.character))
 
       key_col_idx = which(names(df) == "geo_admin0") - 1L
+      hcp_hidden_filter_cols = c("Expand", "Notes", "Source", "geo_admin0")
+      hcp_filter_meta_json = jsonlite::toJSON(unname(build_filter_meta(df, hcp_hidden_filter_cols)), auto_unbox = TRUE)
 
       table_widget = datatable(df,
         selection = "multiple",
@@ -2354,9 +2359,52 @@ server = function(input, output, session) {
                    cell.innerHTML = '<span style=font-weight:700;>-</span>';
                  }
                });
+               var filterMeta = %s;
+               if (!Array.isArray(filterMeta)) {
+                 filterMeta = Object.keys(filterMeta || {}).map(function(k) { return filterMeta[k]; });
+               }
+               var $container = $(api.table().container());
+               var $filterCells = $('thead tr:eq(1) td, thead tr:eq(1) th', $container);
+               if ($filterCells.length === 0) { $filterCells = $('tfoot td, tfoot th', $container); }
+               if ($filterCells.length > 0) {
+                 var colCount = api.columns().count();
+                 var colOffset = (colCount === (filterMeta.length + 1)) ? 1 : 0;
+                 // suppress the DataTables JSON.parse popup that fires when DT reads back a column-search regex value
+                 if ($.fn.dataTable.ext.errMode === 'alert') {
+                   $.fn.dataTable.ext.errMode = function(s, tn, msg) {
+                     if (!/lexical error/i.test(msg || '')) window.alert(msg);
+                   };
+                 }
+                 api.columns().every(function() {
+                   var colIdx = this.index();
+                   var metaIdx = colIdx - colOffset;
+                   var meta = filterMeta[metaIdx] || { type: 'native', options: [] };
+                   if (meta.type !== 'select') { return; }
+                   var column = this;
+                   var $cell = $filterCells.eq($(this.header()).index());
+                   if (!$cell.length) { return; }
+                   if (!$('input,select', $cell).length) { return; }
+                   var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
+                   $select.append($('<option></option>').attr('value', '__all__').text('All'));
+                   $.each(meta.options || [], function(_, val) {
+                     $select.append($('<option></option>').attr('value', val).text(val));
+                   });
+                   $cell.empty().append($select);
+                   var applyFilter = function(val) {
+                     if (!val || val === '__all__') {
+                       column.search('', false, false).draw();
+                       return;
+                     }
+                     column.search('^' + $.fn.dataTable.util.escapeRegex(val) + '$', true, false).draw();
+                   };
+                   $select.val('__all__');
+                   $select.on('change', function() { applyFilter($(this).val()); });
+                 });
+               }
              }",
             details_by_country_json,
-            key_col_idx
+            key_col_idx,
+            hcp_filter_meta_json
           )),
           rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
           columnDefs = list(
