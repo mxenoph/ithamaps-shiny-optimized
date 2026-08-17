@@ -711,9 +711,13 @@ server = function(input, output, session) {
       return(data.frame(Parameter = character(), Selection = character(), stringsAsFactors = FALSE))
     }
 
+    # Use variant-class labels for carrier prevalence measures, otherwise use the standard cause labels.
+    use_vc_labels = isTRUE(as.integer(Query[["Measure"]]) %in% carrier_prevalence_measure_ids)
+    cause_display = if (use_vc_labels) CauseVariantClass else Cause
+
     lookup = list(
       DataType = DataType, Resolution = Resolution, Continent = Continent, Country = Country,
-      Measure = Measure, Cause = Cause,
+      Measure = Measure, Cause = cause_display,
       Healthcare = Healthcare,
       HealthcareS1 = HealthcareS1, HealthcareS2 = HealthcareS2, HealthcareS3 = HealthcareS3,
       HealthcareS4 = HealthcareS4, HealthcareS5 = HealthcareS5, HealthcareS6 = HealthcareS6,

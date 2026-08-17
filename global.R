@@ -806,6 +806,24 @@ Cause = data.frame(
 ) %>%
   filter(Option %in% unique(measure_cause_allowed$cause_name))
 
+# Display-only: substitutes variant_class where populated; used for carrier-prevalence summaries.
+CauseVariantClass = if ("variant_class" %in% names(db_cause)) {
+  data.frame(
+    ID = db_cause$cause_id,
+    Option = dplyr::coalesce(
+      dplyr::na_if(trimws(as.character(db_cause$variant_class)), ""),
+      db_cause$cause_name
+    ),
+    stringsAsFactors = FALSE
+  ) %>% filter(ID %in% Cause$ID)
+} else {
+  Cause
+}
+
+carrier_prevalence_measure_ids = db_measure %>%
+  filter(grepl("carrier prevalence$", tolower(measure_name))) %>%
+  pull(measure_id)
+
 measure_mode = function(measure_label) {
   if (is.null(measure_label) || length(measure_label) == 0 || is.na(measure_label[[1]])) {
     return(NULL)
