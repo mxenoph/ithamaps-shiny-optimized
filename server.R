@@ -1462,7 +1462,8 @@ server = function(input, output, session) {
     scrollWheelZoom = FALSE,
     zoomControl = TRUE,
     zoomSnap = 0.5,
-    zoomDelta = 0.5
+    zoomDelta = 0.5,
+    wheelPxPerZoomLevel = 240  # 120 px/notch ÷ 240 = 0.5 zoom/notch, matching zoomDelta
   )
 
   map_fill_opacity = 0.8
