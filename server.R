@@ -1665,7 +1665,7 @@ server = function(input, output, session) {
     req(is_prediction_mode())
     assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
+      addProviderTiles(basemap_provider, options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
       setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$Mean, colors = assets$Mean_palette, opacity = 0.8, project = TRUE) %>%
@@ -1698,7 +1698,7 @@ server = function(input, output, session) {
     req(is_prediction_mode())
     assets = prediction_data_r()
     leaflet(options = prediction_leaflet_options) %>%
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
+      addProviderTiles(basemap_provider, options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
       setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$Burden, colors = assets$Burden_palette, opacity = 0.8, project = TRUE) %>%
@@ -1722,7 +1722,7 @@ server = function(input, output, session) {
     # options worldCopyJump = FALSE prevents the map from creating a duplicate set of tiles when the user pans across the antimeridian, which would cause confusion when interpreting the raster and clicking to interrogate values.
     leaflet(options = prediction_leaflet_options) %>%
       # options no_wrap stops conntinuous raster images from wrapping around the globe
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(noWrap = TRUE)) %>%
+      addProviderTiles(basemap_provider, options = providerTileOptions(noWrap = TRUE)) %>%
       addScaleBar(position = "bottomleft") %>%
       setView(lng = 80, lat = 30, zoom = 4) %>%
       addRasterImage(assets$CI95, colors = assets$CI95_palette, opacity = 0.8, project = TRUE) %>%
@@ -1858,7 +1858,7 @@ server = function(input, output, session) {
       pal_hcp = colorFactor(palette = hcp_palette, domain = availability_levels, na.color = "#cccccc")
 
       map_widget = leaflet(options = default_leaflet_options) %>%
-        addProviderTiles("CartoDB.Positron") %>%
+        addProviderTiles(basemap_provider) %>%
         addScaleBar(position = "bottomleft") %>%
         addPolygons(
           data = hcp_sf,
@@ -1948,7 +1948,7 @@ server = function(input, output, session) {
     perf_state$map_simplify_secs = round(proc.time()[["elapsed"]] - simplify_start, 3)
 
     map_widget = leaflet(data, options = default_leaflet_options) %>%
-      addProviderTiles("CartoDB.Positron") %>%
+      addProviderTiles(basemap_provider) %>%
       addScaleBar(position = "bottomleft") %>%
       addCircleMarkers(
         data = data,

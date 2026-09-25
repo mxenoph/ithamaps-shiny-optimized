@@ -137,6 +137,11 @@ read_db_prefixes = function(path = "secrets/db_prefix") {
 }
 
 db_prefixes = read_db_prefixes()
+
+# Background tiles for all leaflet maps; any name from
+# https://leaflet-extras.github.io/leaflet-providers/preview/ that needs no API
+# key (CARTO basemaps now require one and show an "API KEY REQUIRED" watermark).
+basemap_provider = Sys.getenv("ITHAMAPS_BASEMAP", unset = "Esri.WorldGrayCanvas")
 ithanet_site_root = sub("/+$", "", Sys.getenv("ITHAMAPS_ITHA_ROOT", unset = db_prefixes$ithanet_site_root))
 ithanet_dbname = paste0("ithabase", db_prefixes$ithabase_prefix)
 joomla_dbname = paste0("joomla", db_prefixes$joomla_prefix)

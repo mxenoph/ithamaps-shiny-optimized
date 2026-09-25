@@ -25,6 +25,7 @@ Connection settings are resolved in this order (first non-empty value wins):
 | `ITHAMAPS_DB_HOST` | `localhost` | Database host |
 | `ITHAMAPS_DB_PORT` | `3306` | Database port |
 | `ITHAMAPS_ITHA_ROOT` | *(from `secrets/db_prefix`)* | Overrides the ITHANET site base URL (used for back-links) |
+| `ITHAMAPS_BASEMAP` | `Esri.WorldGrayCanvas` | Background tiles for all maps. Any [leaflet-providers](https://leaflet-extras.github.io/leaflet-providers/preview/) name that needs **no API key**. `CartoDB.*` now needs a key and shows an "API KEY REQUIRED" watermark; `Stadia.*`, `Thunderforest.*`, `Jawg.*`, `MapTiler.*` also need keys. |
 
 ### `secrets/db_prefix`
 
