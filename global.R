@@ -1542,7 +1542,7 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
       Mean_minus_sd = ifelse(entries > 1, Mean - SD, NA_real_),
       mad_denominator = ifelse(entries > 1, mad(value[!Exclude], na.rm = TRUE), NA_real_),
       Mad = ifelse(entries > 1 & !Exclude & !is.na(mad_denominator) & mad_denominator != 0,
-        0.6745 * (value - Median) / mad_denominator,
+        (value - Median) / mad_denominator,
         NA_real_
       )
     ) %>%
@@ -1552,7 +1552,7 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
       SD_flag = ifelse(entries >= 5 & (value < Mean_minus_sd | value > Mean_plus_sd), "OUTLIER", NA_character_),
       IQR_flag = ifelse(
         entries >= 5 & (
-          value < (upperquantile - 1.5 * (upperquantile - lowquantile)) |
+          value < (lowquantile - 1.5 * (upperquantile - lowquantile)) |
             value > (upperquantile + 1.5 * (upperquantile - lowquantile))
         ),
         "OUTLIER",
