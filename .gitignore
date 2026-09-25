@@ -2,3 +2,6 @@
 cache_adm0_disp.rds
 cache_adm1_disp.rds
 cache_adm2_disp.rds
+
+# Local credentials and per-machine settings
+secrets/

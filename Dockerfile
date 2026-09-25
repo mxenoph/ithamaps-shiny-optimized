@@ -14,12 +14,10 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list && \
 RUN R -e "options(Ncpus = max(1L, parallel::detectCores(logical = TRUE) - 2L)); install.packages(c('DT', 'sf', 'dplyr', 'tidyr',  'bslib', 'shiny', 'readxl', 'stringr', 'metafor', 'leaflet', 'leaflet.extras', 'viridis', 'ggplot2', 'cowplot', 'RMariaDB', 'raster', 'webshot2', 'shinycssloaders', 'zip', 'box', 'future', 'future.apply', 'ragg', 'jsonlite', 'mapview'))"
 
 # Credential and connection env vars — override at runtime, never bake values in
-# ITHAMAPS_MACHINE: row key to select from User_Configuration.xlsx (e.g. "docker")
 # DB_USER_FILE / DB_PASSWORD_FILE: mounted secret-file paths (recommended)
 # DB_USER / DB_PASSWORD: optional plain env overrides
 # ITHAMAPS_DB_HOST / ITHAMAPS_DB_PORT: override host/port at runtime
-ENV ITHAMAPS_MACHINE=docker \
-    ITHAMAPS_DB_HOST="" \
+ENV ITHAMAPS_DB_HOST="" \
     ITHAMAPS_DB_PORT=""
 
 # Copy app files

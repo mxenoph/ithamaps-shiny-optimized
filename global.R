@@ -27,7 +27,6 @@ library(dplyr)
 library(tidyr)
 library(bslib)
 library(shiny)
-library(readxl)
 library(stringr)
 library(metafor)
 library(leaflet)
@@ -40,18 +39,18 @@ library(webshot2)
 library(shinycssloaders)
 
 # ---------------------------------------------------------------------------
-# pick_configuration(): select row from User_Configuration.xlsx
-#   - env var ITHAMAPS_MACHINE selects the row; falls back to first row
-#   - env vars DB_USER / DB_PASSWORD / ITHAMAPS_DB_HOST / ITHAMAPS_DB_PORT
-#     override xlsx values when set
-#   - env vars DB_USER_FILE / DB_PASSWORD_FILE can point to mounted secret files
-#     and take precedence over plain env vars
+# pick_configuration(): resolve DB connection settings
+#   - username / password come from secret files: DB_USER_FILE / DB_PASSWORD_FILE
+#     (defaults secrets/db_user, secrets/db_password), then plain env vars
+#     DB_USER / DB_PASSWORD
+#   - host / port come from ITHAMAPS_DB_HOST / ITHAMAPS_DB_PORT (default
+#     localhost:3306)
 # ---------------------------------------------------------------------------
-read_secret_or_env = function(value_key, file_key) {
-  file_path = Sys.getenv(file_key, unset = "")
+read_secret_or_env = function(value_key, file_key, default_file) {
+  file_path = Sys.getenv(file_key, unset = default_file)
   if (nchar(file_path) > 0 && file.exists(file_path)) {
     value = readLines(file_path, warn = FALSE, n = 1)
-    if (length(value) > 0 && nchar(value[1]) > 0) {
+    if (length(value) > 0 && nchar(trimws(value[1])) > 0) {
       return(trimws(value[1]))
     }
   }
@@ -59,23 +58,14 @@ read_secret_or_env = function(value_key, file_key) {
 }
 
 pick_configuration = function() {
-  cfg = read_xlsx("User_Configuration.xlsx")
-  machine_env = Sys.getenv("ITHAMAPS_MACHINE", unset = "")
-  if (nchar(machine_env) > 0 && machine_env %in% cfg$machine) {
-    row = cfg %>%
-      filter(machine == machine_env) %>%
-      slice(1)
-  } else {
-    row = cfg %>% slice(1)
-  }
-  host_env = Sys.getenv("ITHAMAPS_DB_HOST", unset = "")
-  if (nchar(host_env) > 0) row$host = host_env
-  port_env = Sys.getenv("ITHAMAPS_DB_PORT", unset = "")
-  if (nchar(port_env) > 0) row$port = as.integer(port_env)
-  user_env = read_secret_or_env("DB_USER", "DB_USER_FILE")
-  if (nchar(user_env) > 0) row$username = user_env
-  pass_env = read_secret_or_env("DB_PASSWORD", "DB_PASSWORD_FILE")
-  if (nchar(pass_env) > 0) row$password = pass_env
+  row = list(
+    host     = Sys.getenv("ITHAMAPS_DB_HOST", unset = ""),
+    port     = Sys.getenv("ITHAMAPS_DB_PORT", unset = ""),
+    username = read_secret_or_env("DB_USER", "DB_USER_FILE", "secrets/db_user"),
+    password = read_secret_or_env("DB_PASSWORD", "DB_PASSWORD_FILE", "secrets/db_password")
+  )
+  if (!nzchar(row$host)) row$host = "localhost"
+  if (!nzchar(row$port)) row$port = "3306"
   row
 }
 
@@ -86,7 +76,7 @@ scalar_text = function(value, field_name) {
     stop(
       paste0(
         "Invalid DB configuration field: ", field_name,
-        ". Provide it in User_Configuration.xlsx or override via env/secrets."
+        ". Provide it via secrets/ files or env vars."
       ),
       call. = FALSE
     )
@@ -110,10 +100,15 @@ scalar_port = function(value, field_name = "port") {
 
 Configuration = pick_configuration()
 
+# read_db_prefixes(): key = value settings from secrets/db_prefix
+#   ithabase_prefix / joomla_prefix: DB name suffixes (e.g. "_dev", "_live")
+#   ithanet_site_root: base URL of the ITHANET site (ITHAMAPS_ITHA_ROOT env
+#   var overrides it)
 read_db_prefixes = function(path = "secrets/db_prefix") {
   defaults = list(
     ithabase_prefix = "_live",
-    joomla_prefix = "_live"
+    joomla_prefix = "_live",
+    ithanet_site_root = "http://localhost/live-ithanet-j4"
   )
 
   if (!file.exists(path)) {
@@ -142,7 +137,7 @@ read_db_prefixes = function(path = "secrets/db_prefix") {
 }
 
 db_prefixes = read_db_prefixes()
-ithanet_site_root = Sys.getenv("ITHAMAPS_ITHA_ROOT", unset = "http://localhost/live-ithanet-j4")
+ithanet_site_root = sub("/+$", "", Sys.getenv("ITHAMAPS_ITHA_ROOT", unset = db_prefixes$ithanet_site_root))
 ithanet_dbname = paste0("ithabase", db_prefixes$ithabase_prefix)
 joomla_dbname = paste0("joomla", db_prefixes$joomla_prefix)
 
