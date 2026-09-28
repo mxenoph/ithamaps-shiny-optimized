@@ -343,6 +343,18 @@ server = function(input, output, session) {
     else (session$clientData$url_search %||% "")
   })
 
+  # view=map is read from the iframe URL only (never from an injected query), so a
+  # map-only embed stays map-only.
+  map_only_r = reactive({
+    is_map_only_query(session$clientData$url_search %||% "")
+  })
+
+  observe({
+    if (isTRUE(map_only_r())) {
+      session$sendCustomMessage("ithamaps-map-only", TRUE)
+    }
+  })
+
   # Build data bundle from the current URL query string
   query_bundle = reactive({
     raw_qs = active_url_search_r()
@@ -537,6 +549,27 @@ server = function(input, output, session) {
   output$main_content = renderUI({
     if (length(validation_errors_r()) > 0) {
       return(div())
+    }
+
+    if (isTRUE(map_only_r())) {
+      # Map-only embed: no query card, side panel, downloads or table (those
+      # outputs are then never computed).
+      if (is_prediction_mode()) {
+        return(leafletOutput("map_mean", height = "100vh"))
+      }
+      if (!data_available()) {
+        return(div(class = "ithamaps-map-only-empty", "No data is available for the selected parameter combination."))
+      }
+      return(div(
+        style = "position: relative; height: 100vh;",
+        div(
+          id = "ithamaps_map_loader",
+          class = "ithamaps-map-loader is-loading",
+          div(class = "ithamaps-map-loader-caption", "Retrieving requested data. This may take a moment."),
+          div(class = "ithamaps-progress", div(class = "ithamaps-progress-bar"))
+        ),
+        leafletOutput("map", height = "100vh")
+      ))
     }
 
     if (is_prediction_mode()) {

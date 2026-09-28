@@ -1475,11 +1475,28 @@ debug_bundle_enabled = function() {
   isTRUE(ithamaps_debug_mode)
 }
 
+# Display-only parameters: they change how the page is laid out, not which data
+# is queried, so they are dropped from the query string (and the bundle cache key).
+display_query_keys = c("view")
+
 normalize_query_string = function(raw_qs) {
   if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
     return("")
   }
-  sub("^\\?", "", raw_qs)
+  qs = sub("^\\?", "", raw_qs)
+  parts = strsplit(qs, "&", fixed = TRUE)[[1]]
+  keys = tolower(sub("=.*$", "", parts))
+  paste(parts[!(keys %in% display_query_keys)], collapse = "&")
+}
+
+# view=map: embed mode that renders only the map (e.g. for the ITHANET home page).
+is_map_only_query = function(raw_qs) {
+  if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
+    return(FALSE)
+  }
+  parts = strsplit(sub("^\\?", "", raw_qs), "&", fixed = TRUE)[[1]]
+  kv = strsplit(parts, "=", fixed = TRUE)
+  any(vapply(kv, function(x) length(x) == 2 && tolower(x[[1]]) == "view" && tolower(utils::URLdecode(x[[2]])) == "map", logical(1)))
 }
 
 entries_to_point_sf = function(data) {

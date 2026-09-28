@@ -31,6 +31,10 @@ ui = fluidPage(
         if (!window.parent || window.parent === window) {
           return;
         }
+        // Map-only embeds have a fixed height set by the parent page.
+        if (document.body && document.body.classList.contains('ithamaps-map-only')) {
+          return;
+        }
         var nextHeight = currentHeight();
         if (!nextHeight || nextHeight < 100) {
           return;
@@ -85,6 +89,9 @@ ui = fluidPage(
       if (window.Shiny && Shiny.addCustomMessageHandler) {
         Shiny.addCustomMessageHandler('ithamaps-resize-iframe', function(message) {
           schedulePostHeight();
+        });
+        Shiny.addCustomMessageHandler('ithamaps-map-only', function(message) {
+          document.body.classList.add('ithamaps-map-only');
         });
         Shiny.addCustomMessageHandler('ithamaps-export-status', function(message) {
           var el = document.getElementById('ithamaps_export_status');
@@ -178,6 +185,10 @@ ui = fluidPage(
                                  .raster-legend-labels {display: flex; justify-content: space-between; margin-top: 0.25rem; font-size: 0.75rem;}
                                  .download-row {margin-top: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}
                                  .pred-maps-grid {display: grid; grid-template-columns: 1fr; gap: 1rem;}
+                                 body.ithamaps-map-only {margin: 0; padding: 0; overflow: hidden;}
+                                 body.ithamaps-map-only > .container-fluid {padding: 0; margin: 0; max-width: none;}
+                                 body.ithamaps-map-only .perf-panel {display: none;}
+                                 .ithamaps-map-only-empty {padding: 2rem; text-align: center; color: #856404; background: #fff3cd;}
                                  @media (min-width: 1360px) { .pred-maps-grid { grid-template-columns: repeat(3, 1fr); } }")),
 
   uiOutput("timing_panel"),

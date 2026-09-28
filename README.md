@@ -156,7 +156,16 @@ All parameters are integer IDs passed in the query string. They are resolved aga
 When `Metric` is omitted the raw `value` column is used as-is (no aggregation).  
 When `Aggregation` is omitted, country-level grouping is applied by default.
 
----
+### Display parameter: `view=map`
+
+`view=map` renders only the leaflet map at full viewport height. The query card, the side panel, the download buttons and the table are left out, and those outputs are never computed. The parameter is display-only:
+
+- `normalize_query_string()` (`global.R`) drops it, so a map-only request shares the bundle cache entry of the same query on the full page.
+- It is read from the iframe URL only (`map_only_r`, `server.R`). A query injected with `ithamaps-query-update` does not change it.
+- In this mode the page gets `body.ithamaps-map-only` and stops posting `resizeIframe` heights, because the parent sets the iframe height. Hover labels work; marker and polygon click details (shown in the side panel) are not available.
+- In prediction mode (`DataType=2`) only `map_mean` is shown.
+
+Used by the ITHANET home page (mod_ithanet_home2), for example `?DataType=1&Resolution=1&Measure=9&Cause=1&Metric=2&Aggregation=1&view=map`.
 
 ## Query Processing Flow
 
