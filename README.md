@@ -167,6 +167,23 @@ When `Aggregation` is omitted, country-level grouping is applied by default.
 
 Used by the ITHANET home page (mod_ithanet_home2), for example `?DataType=1&Resolution=1&Measure=9&Cause=1&Metric=2&Aggregation=1&view=map`.
 
+### Data parameter: `format=json`
+
+`/?<query>&format=json` returns the values the map shows for `<query>` as JSON instead of the page. `ui` in `ui.R` is a function that answers these requests with `json_http_response()` (`global.R`). The response comes from `metric_json_payload()`, which reuses `build_query_bundle_cached()` and `compute_outlier_aware_metric()`, so the numbers are exactly the map's:
+
+```json
+{"query": "...", "metric": "Mean", "unit": "percent", "aggregation": "Country-level", "errors": [],
+ "rows": [{"geo_admin0": "al", "Region": "Albania", "Metric": 36.74}, ...]}
+```
+
+- There is one row per polygon, following `Aggregation`. `geo_admin1`/`Region1` (and `geo_admin2`/`Region2`) are added for province and district level. Rows are largest first.
+- Epidemiological measures only; a healthcare query returns no rows.
+- Like `view`, `format` is display-only and doesn't change the bundle cache key.
+- It is used by the IthaGenes variant page (mod_ithagenes `get_freq_for_mut`) for its Relative Frequencies chart.
+- The bundle is built synchronously in the R process. An uncached query blocks the app for as long as the map would take to build it, so callers should cache the response (mod_ithagenes caches it for a day).
+
+---
+
 ## Query Processing Flow
 
 Each Shiny session processes the URL query string independently via `build_query_bundle()`:

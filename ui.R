@@ -8,7 +8,7 @@
 # defined there (e.g. bs_theme() from bslib, loaded in global.R).
 # =============================================================================
 
-ui = fluidPage(
+ui_page = fluidPage(
   theme = bs_theme(version = 5, bootswatch = "litera"),
   tags$head(
     tags$script(HTML("(function() {
@@ -194,3 +194,12 @@ ui = fluidPage(
   uiOutput("timing_panel"),
   uiOutput("main_content")
 )
+
+# Requests with format=json get the map's values as JSON (metric_json_payload,
+# global.R) instead of the page.
+ui = function(req) {
+  if (is_json_query(req$QUERY_STRING %||% "")) {
+    return(json_http_response(req$QUERY_STRING))
+  }
+  ui_page
+}

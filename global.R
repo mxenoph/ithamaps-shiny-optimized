@@ -1477,7 +1477,7 @@ debug_bundle_enabled = function() {
 
 # Display-only parameters: they change how the page is laid out, not which data
 # is queried, so they are dropped from the query string (and the bundle cache key).
-display_query_keys = c("view")
+display_query_keys = c("view", "format")
 
 normalize_query_string = function(raw_qs) {
   if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
@@ -1487,6 +1487,60 @@ normalize_query_string = function(raw_qs) {
   parts = strsplit(qs, "&", fixed = TRUE)[[1]]
   keys = tolower(sub("=.*$", "", parts))
   paste(parts[!(keys %in% display_query_keys)], collapse = "&")
+}
+
+# format=json: return the map's per-region values as JSON instead of the page
+# (see json_http_response).
+is_json_query = function(raw_qs) {
+  if (is.null(raw_qs) || is.na(raw_qs) || nchar(raw_qs) == 0) {
+    return(FALSE)
+  }
+  parts = strsplit(sub("^\\?", "", raw_qs), "&", fixed = TRUE)[[1]]
+  any(tolower(parts) == "format=json")
+}
+
+# The values the map shows for a query, as a list for JSON: one row per
+# polygon (country, province or district, following Aggregation) with the
+# selected summary metric, computed by the same build_query_bundle_cached() and
+# compute_outlier_aware_metric() as the map. Used by other ITHANET pages (e.g. the
+# IthaGenes variant page's Relative Frequencies chart) so their numbers always
+# match IthaMaps. Epidemiological measures only.
+metric_json_payload = function(raw_qs) {
+  bundle = build_query_bundle_cached(raw_qs)
+  info = bundle$query_info
+  res = list(
+    query = normalize_query_string(raw_qs),
+    metric = bundle$MetricN %||% NULL,
+    unit = bundle$MetricUnit %||% NULL,
+    aggregation = if (!is.null(info$Aggregation) && !is.na(info$Aggregation)) as.character(info$Aggregation) else "Country-level",
+    errors = as.list(bundle$validation_errors %||% character()),
+    rows = list()
+  )
+  se = bundle$SubsetE
+  if (length(res$errors) > 0 || is.null(se) || nrow(se) == 0 || !("Metric" %in% names(se))) {
+    return(res)
+  }
+  keys = switch(res$aggregation,
+    "Province-level" = c("geo_admin0", "Region", "geo_admin1", "Region1"),
+    "District-level" = c("geo_admin0", "Region", "geo_admin1", "Region1", "geo_admin2", "Region2"),
+    c("geo_admin0", "Region")
+  )
+  rows = se %>%
+    dplyr::select(all_of(c(keys, "Metric"))) %>%
+    distinct() %>%
+    arrange(desc(Metric))
+  res$rows = rows
+  res
+}
+
+json_http_response = function(raw_qs) {
+  body = tryCatch(
+    jsonlite::toJSON(metric_json_payload(raw_qs), auto_unbox = TRUE, null = "null", na = "null", digits = NA, dataframe = "rows"),
+    error = function(e) {
+      jsonlite::toJSON(list(query = normalize_query_string(raw_qs), errors = list(conditionMessage(e)), rows = list()), auto_unbox = TRUE)
+    }
+  )
+  shiny::httpResponse(200L, "application/json; charset=utf-8", as.character(body))
 }
 
 # view=map: embed mode that renders only the map (e.g. for the ITHANET home page).
