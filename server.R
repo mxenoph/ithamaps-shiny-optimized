@@ -462,6 +462,7 @@ server = function(input, output, session) {
   # renderLeaflet execution. Selection mapping and downloads still read the live
   # filtered_data()/rows_all, so their behaviour is unchanged.
   map_filtered_data = reactiveVal(NULL)
+  map_filtered_base = NULL
 
   observe({
     req(!is_prediction_mode())
@@ -470,15 +471,22 @@ server = function(input, output, session) {
     rows_all = input$data_table_rows_all
     is_unfiltered = is.null(rows_all) || length(rows_all) == nrow(base)
     current = isolate(map_filtered_data())
-    # Skip when both old and new state are "unfiltered" with the same base size:
+    # Skip when both old and new state are "unfiltered" over the same base data:
     # this is exactly the NULL → [1:N] startup transition that caused the double render.
+    # Sorting alone also lands here (all rows kept, only the order changes); the
+    # map does not depend on row order, so it is not re-rendered either.
     if (!is.null(current) &&
         is_unfiltered &&
         isTRUE(attr(current, "ithamaps_unfiltered")) &&
-        nrow(current) == nrow(base)) {
+        identical(map_filtered_base, base)) {
       return()
     }
-    new_data = if (is_unfiltered) base else base[rows_all, ]
+    map_filtered_base <<- base
+    orig_rows = if (is_unfiltered) seq_len(nrow(base)) else as.integer(rows_all)
+    new_data = base[orig_rows, ]
+    # Original row index in base (= DT row index), used for marker/polygon
+    # layerIds so they identify the same study regardless of table order.
+    new_data$ithamaps_row = orig_rows
     attr(new_data, "ithamaps_unfiltered") = is_unfiltered
     map_filtered_data(new_data)
   })
@@ -500,29 +508,42 @@ server = function(input, output, session) {
   # without re-collapsing. The observer consumes (resets) the flag.
   suppress_selection_observer = reactiveVal(FALSE)
 
-  local_rows_from_table_rows = function(table_rows) {
-    if (is.null(table_rows) || length(table_rows) == 0) {
-      return(NULL)
-    }
-    table_rows = as.integer(table_rows)
-    rows_all = input$data_table_rows_all
-    if (is.null(rows_all)) {
-      return(table_rows)
-    }
-    local_row = match(table_rows, rows_all)
-    local_row = as.integer(local_row[!is.na(local_row)])
-    if (length(local_row) == 0) NULL else local_row
+  # All selection state (selected_row, selected_marker_idx, marker layerIds
+  # "row_N", previous_selection) uses original row indices into
+  # SubsetE_r()/SubsetHCP_r(). These equal DT's row indices
+  # (rows_selected/rows_all/selectRows), independent of table sorting/filtering.
+  selection_base_data = function() {
+    if (is_hcp_mode()) SubsetHCP_r() else SubsetE_r()
   }
 
-  table_rows_from_local_rows = function(local_rows) {
-    if (is.null(local_rows) || length(local_rows) == 0) {
-      return(integer(0))
-    }
-    local_rows = as.integer(local_rows)
+  # Original row indices currently shown by the table, in display order.
+  visible_table_rows = function() {
     rows_all = input$data_table_rows_all
-    out = if (is.null(rows_all)) local_rows else rows_all[local_rows]
-    out = as.integer(out[!is.na(out)])
-    out
+    if (is.null(rows_all)) seq_len(nrow(selection_base_data())) else as.integer(rows_all)
+  }
+
+  # Select table rows programmatically, jumping to the page that shows the first
+  # of them in the table's current (sorted/filtered) order.
+  push_table_selection = function(table_rows) {
+    table_rows = as.integer(table_rows)
+    current = as.integer(isolate(input$data_table_rows_selected) %||% integer(0))
+    # Only arm the suppression flag when DT will actually emit a change event;
+    # otherwise it would linger and swallow the user's next manual click.
+    if (!setequal(current, table_rows)) {
+      suppress_selection_observer(TRUE)
+    }
+    proxy = dataTableProxy("data_table")
+    if (length(table_rows) > 0) {
+      positions = match(table_rows, visible_table_rows())
+      positions = positions[!is.na(positions)]
+      if (length(positions) > 0) {
+        page_length = 10L
+        proxy %>% selectPage(((min(positions) - 1L) %/% page_length) + 1L)
+      }
+      proxy %>% selectRows(table_rows)
+    } else {
+      proxy %>% selectRows(NULL)
+    }
   }
 
   set_export_status = function(msg) {
@@ -985,24 +1006,17 @@ server = function(input, output, session) {
       return(invisible(NULL))
     }
     table_row = as.integer(table_row[[1]])
-    row_local = local_rows_from_table_rows(table_row)
-    if (is.null(row_local) || length(row_local) == 0) {
+    if (table_row < 1L || table_row > nrow(selection_base_data())) {
       return(invisible(NULL))
     }
-    row_idx = as.integer(row_local[[1]])
     previous_selection(table_row)
-    selected_row(row_idx)
-    selected_marker_idx(row_idx)
-    selected_marker_layer_id(paste0("row_", row_idx))
+    selected_row(table_row)
+    selected_marker_idx(table_row)
+    selected_marker_layer_id(paste0("row_", table_row))
     selected_shape_idx(NULL)
     same = length(current_selection) == 1 && current_selection[[1]] == table_row
     if (!same) {
-      suppress_selection_observer(TRUE)
-      proxy = dataTableProxy("data_table")
-      page_length = 10L
-      target_page = ((table_row - 1L) %/% page_length) + 1L
-      proxy %>% selectPage(target_page)
-      proxy %>% selectRows(table_row)
+      push_table_selection(table_row)
     }
   }
 
@@ -1020,7 +1034,7 @@ server = function(input, output, session) {
     if (isTRUE(suppress_selection_observer())) {
       suppress_selection_observer(FALSE)
       previous_selection(new_sel)
-      selected_row(local_rows_from_table_rows(new_sel))
+      selected_row(if (length(new_sel) > 0) new_sel else NULL)
       return(invisible(NULL))
     }
 
@@ -1078,7 +1092,7 @@ server = function(input, output, session) {
     row_local = selected_row()
     if (!is.null(row_local) && length(row_local) > 0) {
       row_idx = as.integer(row_local[[1]])
-      data = filtered_data()
+      data = SubsetHCP_r()
       if (!is.na(row_idx) && row_idx >= 1L && row_idx <= nrow(data)) {
         idx0 = match(data$geo_admin0[row_idx], adm0_sel$geo_admin0)
         if (!is.na(idx0)) {
@@ -1864,7 +1878,7 @@ server = function(input, output, session) {
 
     if (is_hcp_mode()) {
       data = map_filtered_data() %>%
-        mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
+        mutate(marker_layer_id = paste0("row_", ithamaps_row))
       simplify_start = proc.time()[["elapsed"]]
       idx0 = match(data$geo_admin0, adm0_sel_disp$geo_admin0)
       data = data %>%
@@ -1955,7 +1969,7 @@ server = function(input, output, session) {
     single_value = pal_metric_obj$single_value
     single_colour = pal_metric_obj$single_colour
     data = map_filtered_data() %>%
-      mutate(marker_layer_id = paste0("row_", dplyr::row_number()))
+      mutate(marker_layer_id = paste0("row_", ithamaps_row))
 
     SubsetG = SubsetG %>%
       mutate(
@@ -3359,8 +3373,9 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
     req(!is_prediction_mode())
     req(data_available())
     click = input$map_marker_click
-    data = filtered_data()
+    base = SubsetE_r()
     if (!is.null(click)) {
+      # Marker layerIds are "row_<original row index in SubsetE_r()>".
       nearest_idx = NA_integer_
       click_id = click$id %||% NULL
 
@@ -3368,21 +3383,24 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         click_id_chr = as.character(click_id)
         if (grepl("^row_[0-9]+$", click_id_chr)) {
           parsed_idx = suppressWarnings(as.integer(sub("^row_", "", click_id_chr)))
-          if (!is.na(parsed_idx) && parsed_idx >= 1L && parsed_idx <= nrow(data)) {
+          if (!is.na(parsed_idx) && parsed_idx >= 1L && parsed_idx <= nrow(base)) {
             nearest_idx = parsed_idx
           }
         }
       }
 
       if (is.na(nearest_idx)) {
-        lng = suppressWarnings(as.numeric(data$longitude))
-        lat = suppressWarnings(as.numeric(data$latitude))
+        candidates = visible_table_rows()
+        lng = suppressWarnings(as.numeric(base$longitude[candidates]))
+        lat = suppressWarnings(as.numeric(base$latitude[candidates]))
         dists = (lng - click$lng)^2 + (lat - click$lat)^2
         dists[is.na(dists)] = Inf
-        nearest_idx = which.min(dists)
+        if (length(dists) > 0) {
+          nearest_idx = candidates[[which.min(dists)]]
+        }
       }
 
-      if (!is.finite(nearest_idx) || is.na(nearest_idx) || nearest_idx < 1L || nearest_idx > nrow(data)) {
+      if (is.na(nearest_idx) || nearest_idx < 1L || nearest_idx > nrow(base)) {
         return(invisible(NULL))
       }
 
@@ -3390,17 +3408,8 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       selected_marker_idx(nearest_idx)
       selected_marker_layer_id(paste0("row_", nearest_idx))
       selected_shape_idx(NULL)
-
-      table_rows = table_rows_from_local_rows(nearest_idx)
-      previous_selection(table_rows)
-      if (length(table_rows) > 0) {
-        page_length = 10L
-        target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
-        suppress_selection_observer(TRUE)
-        proxy = dataTableProxy("data_table")
-        proxy %>% selectPage(target_page)
-        proxy %>% selectRows(table_rows)
-      }
+      previous_selection(nearest_idx)
+      push_table_selection(nearest_idx)
     }
   })
 
@@ -3417,31 +3426,26 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       if (!grepl("^row_[0-9]+$", click_id_chr)) {
         return(invisible(NULL))
       }
+      # Polygon layerIds are "row_<original row index in SubsetHCP_r()>".
       idx = suppressWarnings(as.integer(sub("^row_", "", click_id_chr)))
-      data = filtered_data()
-      if (is.na(idx) || idx < 1L || idx > nrow(data)) {
+      base = SubsetHCP_r()
+      if (is.na(idx) || idx < 1L || idx > nrow(base)) {
         return(invisible(NULL))
       }
       # Healthcare polygons are drawn per row but a country may have several
-      # rows (one per Availability status); select every row for that country.
+      # rows (one per Availability status); select every visible row for that country.
       selected_rows = idx
-      if ("geo_admin0" %in% names(data) && !is.na(data$geo_admin0[[idx]])) {
-        selected_rows = which(data$geo_admin0 == data$geo_admin0[[idx]])
+      if ("geo_admin0" %in% names(base) && !is.na(base$geo_admin0[[idx]])) {
+        vis = visible_table_rows()
+        selected_rows = vis[!is.na(base$geo_admin0[vis]) & base$geo_admin0[vis] == base$geo_admin0[[idx]]]
+        if (length(selected_rows) == 0) selected_rows = idx
       }
       selected_row(selected_rows)
       selected_marker_idx(idx)
       selected_marker_layer_id(NULL)
       selected_shape_idx(NULL)
-      table_rows = table_rows_from_local_rows(selected_rows)
-      previous_selection(table_rows)
-      if (length(table_rows) > 0) {
-        page_length = 10L
-        target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
-        suppress_selection_observer(TRUE)
-        proxy = dataTableProxy("data_table")
-        proxy %>% selectPage(target_page)
-        proxy %>% selectRows(table_rows)
-      }
+      previous_selection(selected_rows)
+      push_table_selection(selected_rows)
       return(invisible(NULL))
     }
     click = input$map_shape_click
@@ -3473,16 +3477,21 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         }
       }
 
-      data = filtered_data()
+      base = SubsetE_r()
+      vis = visible_table_rows()
       selected_rows = integer(0)
       selected_shape = SubsetG[nearest_idx, , drop = FALSE]
+      rows_matching = function(col) {
+        vals = base[[col]][vis]
+        vis[!is.na(vals) & vals == selected_shape[[col]][[1]]]
+      }
 
-      if ("geo_admin2" %in% names(selected_shape) && "geo_admin2" %in% names(data) && !is.na(selected_shape$geo_admin2[[1]])) {
-        selected_rows = which(data$geo_admin2 == selected_shape$geo_admin2[[1]])
-      } else if ("geo_admin1" %in% names(selected_shape) && "geo_admin1" %in% names(data) && !is.na(selected_shape$geo_admin1[[1]])) {
-        selected_rows = which(data$geo_admin1 == selected_shape$geo_admin1[[1]])
-      } else if ("geo_admin0" %in% names(selected_shape) && "geo_admin0" %in% names(data) && !is.na(selected_shape$geo_admin0[[1]])) {
-        selected_rows = which(data$geo_admin0 == selected_shape$geo_admin0[[1]])
+      if ("geo_admin2" %in% names(selected_shape) && "geo_admin2" %in% names(base) && !is.na(selected_shape$geo_admin2[[1]])) {
+        selected_rows = rows_matching("geo_admin2")
+      } else if ("geo_admin1" %in% names(selected_shape) && "geo_admin1" %in% names(base) && !is.na(selected_shape$geo_admin1[[1]])) {
+        selected_rows = rows_matching("geo_admin1")
+      } else if ("geo_admin0" %in% names(selected_shape) && "geo_admin0" %in% names(base) && !is.na(selected_shape$geo_admin0[[1]])) {
+        selected_rows = rows_matching("geo_admin0")
       }
 
       # Set shape/marker state first so the programmatic selectRows() below does
@@ -3490,25 +3499,9 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       selected_shape_idx(nearest_idx)
       selected_marker_idx(NULL)
       selected_marker_layer_id(NULL)
-
-      proxy = dataTableProxy("data_table")
-      if (length(selected_rows) > 0) {
-        selected_row(selected_rows)
-        table_rows = table_rows_from_local_rows(selected_rows)
-        previous_selection(table_rows)
-        if (length(table_rows) > 0) {
-          page_length = 10L
-          target_page = ((min(table_rows) - 1L) %/% page_length) + 1L
-          suppress_selection_observer(TRUE)
-          proxy %>% selectPage(target_page)
-          proxy %>% selectRows(table_rows)
-        }
-      } else {
-        selected_row(NULL)
-        previous_selection(integer(0))
-        suppress_selection_observer(TRUE)
-        proxy %>% selectRows(NULL)
-      }
+      selected_row(if (length(selected_rows) > 0) selected_rows else NULL)
+      previous_selection(selected_rows)
+      push_table_selection(selected_rows)
     }
   })
 
@@ -3518,9 +3511,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
     selected_marker_layer_id(NULL)
     selected_shape_idx(NULL)
     previous_selection(integer(0))
-    suppress_selection_observer(TRUE)
-    dataTableProxy("data_table") %>%
-      selectRows(NULL)
+    push_table_selection(integer(0))
   })
 
   output$custom_popup = renderUI({
