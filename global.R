@@ -297,6 +297,25 @@ dbDisconnect(Ithanet)
 
 rm(Ithanet, Datatables, set_options)
 
+# GBD (Global Burden of Disease) report data is published elsewhere and must not
+# be served by this app, whether epidemiological or healthcare. Mirrors:
+#   SELECT source_id FROM ithamaps_accumulated_sources
+#   WHERE citation_str LIKE '%GBD%' OR citation_str LIKE '%Global Burden%'
+#      OR report LIKE '%GBD%';
+# (LIKE is case-insensitive under MariaDB's default collation.) Data provided by
+# IHME experts that is not from a GBD report is kept.
+gbd_source_ids = db_ithamaps_accumulated_sources %>%
+  dplyr::filter(
+    grepl("GBD", as.character(citation_str), ignore.case = TRUE) |
+      grepl("Global Burden", as.character(citation_str), ignore.case = TRUE) |
+      grepl("GBD", as.character(report), ignore.case = TRUE)
+  ) %>%
+  dplyr::pull(source_id)
+message(sprintf(
+  "[ithamaps] excluding GBD sources: source_id %s",
+  if (length(gbd_source_ids) > 0) paste(gbd_source_ids, collapse = ", ") else "(none found)"
+))
+
 # Connection to joomla
 Joomla = open_mariadb_connection(joomla_dbname, Configuration)
 
@@ -437,6 +456,7 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     ), by = "locus_id") %>%
   left_join(db_ithamaps_accumulated_sources %>%
     rename("ihme_id" = expert), by = "source_id") %>%
+  filter(!source_id %in% gbd_source_ids) %>%
   left_join(db_ithamaps_log %>%
     rename("expert_id" = curated_by) %>%
     select(entry_id, expert_id), by = "entry_id") %>%
@@ -598,6 +618,7 @@ availability_levels = expand_grid(
 # ORDER BY `h`.`regions_id` ASC;
 db_hcp_per_region = db_hcp_per_region %>%
   rename("source_id" = source) %>%
+  filter(!source_id %in% gbd_source_ids) %>%
   left_join(db_regions %>% select(-c(created, updated)), by = "regions_id") %>%
   left_join(db_cause, by = "cause_id") %>%
   left_join(db_ithamaps_accumulated_sources %>%
