@@ -507,6 +507,24 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     filter(!is.na(phenotype)) %>%
     select(-count) %>%
     distinct(), by = "ithaID") %>%
+  # Short source label + link, mirroring db_hcp_per_region (PMID/DOI/expert,
+  # falling back to the full citation). Built here while pmid/doi/ihme_id are
+  # still present; they are dropped below.
+  mutate(
+    source_link = case_when(
+      !is.na(pmid) ~ str_c("https://pubmed.ncbi.nlm.nih.gov/", pmid),
+      !is.na(doi) ~ str_c("https://doi.org/", doi),
+      !is.na(ihme_id) ~ str_c(ithanet_site_root, "/community/experts?expID=", ihme_id),
+      TRUE ~ as.character(report)
+    ),
+    source_label = case_when(
+      !is.na(pmid) ~ str_c("PMID: ", pmid),
+      !is.na(doi) ~ str_c("DOI: ", doi),
+      !is.na(expert) ~ str_c("expert: ", expert),
+      !is.na(citation_str) ~ as.character(citation_str),
+      TRUE ~ "Source"
+    )
+  ) %>%
   # Keep the original metric FK for diagnostics (distinct from the Joomla
   # "Metric" summary-statistic parameter).
   mutate(metric_fk_id = metric_id) %>%
@@ -1608,6 +1626,18 @@ format_metric_unit = function(unit) {
   }
   u = as.character(unit[[1]])
   if (identical(tolower(u), "percent")) "%" else u
+}
+
+# Vectorised HTML for a source cell: the (escaped) short label, wrapped in a
+# link when the URL is http(s). Same markup as the healthcare Source column.
+source_link_html = function(label, url) {
+  lbl = htmltools::htmlEscape(ifelse(is.na(label), "", as.character(label)))
+  url = as.character(url)
+  ifelse(
+    !is.na(url) & grepl("^https?://", url, ignore.case = TRUE),
+    paste0('<a href="', htmltools::htmlEscape(url), '" target="_blank" rel="noopener noreferrer">', lbl, '</a>'),
+    lbl
+  )
 }
 
 # Compose a legend/label title that appends the data unit (if any) to the

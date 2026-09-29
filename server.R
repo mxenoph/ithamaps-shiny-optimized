@@ -1228,9 +1228,21 @@ server = function(input, output, session) {
       })
     } else {
       SubsetE = SubsetE_r()
+      # Full citation followed by the short linked label, e.g.
+      # "Author et al. 2010 (PMID: 123)". When the short label is itself the
+      # citation (no PMID/DOI/expert), show it once.
+      source_short = source_link_html(SubsetE$source_label, SubsetE$source_link)
+      citation = as.character(SubsetE$citation_str)
+      source_html = ifelse(
+        !is.na(citation) & nzchar(citation) & citation != SubsetE$source_label,
+        paste0(htmltools::htmlEscape(ifelse(is.na(citation), "", citation)), " (", source_short, ")"),
+        source_short
+      )
       lapply(1:nrow(SubsetE), function(i) {
+        metric_i = as.character(SubsetE$metric_unit[i])
+        value_field = if (!is.na(metric_i) && nzchar(metric_i)) paste0("Value (", metric_i, ")") else "Value"
         fields = c(
-          "Country", "Province", "District", "Value", "Study period", "Risk of bias", "Globin phenotype", "IthaID",
+          "Country", "Province", "District", value_field, "Study period", "Risk of bias", "Globin phenotype", "IthaID",
           "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
           "Sex", "Age", "Consanguinity", "Diagnostic method", "Recruitment site", "Coordinates", "Notes", "Source"
         )
@@ -1241,7 +1253,7 @@ server = function(input, output, session) {
           SubsetE$race[i], SubsetE$religion_name[i], SubsetE$sex[i], SubsetE$age[i], SubsetE$consaguinity[i],
           SubsetE$diagnostic_method[i], SubsetE$recruitment_site[i],
           paste0("(", round(as.numeric(SubsetE$latitude[i]), 4), ", ", round(as.numeric(SubsetE$longitude[i]), 4), ")"),
-          SubsetE$note[i], SubsetE$citation_str[i]
+          SubsetE$note[i], source_html[i]
         )
         df = data.frame(Field = fields, Value = values, stringsAsFactors = FALSE)
         df = df[df$Value != "" & !is.na(df$Value), ]
@@ -2118,7 +2130,10 @@ server = function(input, output, session) {
     render_start = proc.time()[["elapsed"]]
 
     # Single source of truth for columns hidden from view but kept in the data.
-    hidden_display_cols = c("Latitude", "Longitude", "Notes", "Source")
+    hidden_display_cols = c("Latitude", "Longitude", "Notes")
+    # Visible but without a dropdown filter (HTML link cells), as in the
+    # healthcare table.
+    no_filter_cols = c(hidden_display_cols, "Source")
 
     build_filter_meta = function(df, hidden_cols) {
       lapply(seq_along(df), function(i) {
@@ -2471,7 +2486,10 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
     }
 
     SubsetE = SubsetE_r()
+    # SubsetE already carries the aggregated per-region `Metric`; drop it so the
+    # per-entry metric name (metric_unit) can take the "Metric" column name.
     df = SubsetE %>%
+      dplyr::select(-any_of("Metric")) %>%
       rename(
         "Country" = Region,
         "Province" = Region1,
@@ -2486,6 +2504,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         "Sample size" = sample_size,
         "Population tested positive" = count,
         "Value" = value,
+        "Metric" = metric_unit,
         "Cohort" = status_group,
         "Nationality" = nationality,
         "Ethnicity" = ethnicity_name,
@@ -2495,13 +2514,13 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         "Age" = age,
         "Consanguinity" = consaguinity,
         "Diagnostic method" = diagnostic_method,
-        "Notes" = note,
-        "Source" = citation_str
+        "Notes" = note
       ) %>%
+      mutate(Source = source_link_html(source_label, source_link)) %>%
       dplyr::select(
         "Country", "Province", "District", "Recruitment site", "Latitude", "Longitude",
         "Study period", "Risk of bias", "Globin phenotype", "IthaID", "Sample size",
-        "Population tested positive", "Value", "Cohort", "Nationality", "Ethnicity",
+        "Population tested positive", "Value", "Metric", "Cohort", "Nationality", "Ethnicity",
         "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source"
       )
 
@@ -2522,12 +2541,12 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
     table_widget = datatable(df,
       selection = "multiple",
       filter = "top",
-      escape = setdiff(names(df), "IthaID"),
+      escape = setdiff(names(df), c("IthaID", "Source")),
       options = list(
         pageLength = 10,
         lengthChange = FALSE,
         scrollX = FALSE,
-        initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df, hidden_display_cols)), auto_unbox = TRUE)),
+        initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df, no_filter_cols)), auto_unbox = TRUE)),
         rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
         # rownames=TRUE (default): row-names occupy DT index 0, so R's which() 1-based = DT column index.
         columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% hidden_display_cols)))
@@ -3183,6 +3202,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       }
       SubsetE = SubsetE_r()
       df = SubsetE %>%
+        dplyr::select(-any_of("Metric")) %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -3190,7 +3210,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Risk of bias" = bias_flag, "Globin phenotype" = globin_phenotype,
           "IthaID" = ithaID, "Sample size" = sample_size,
           "Population tested positive" = count, "Value" = value,
-          "Cohort" = status_group, "Nationality" = nationality,
+          "Metric" = metric_unit, "Cohort" = status_group, "Nationality" = nationality,
           "Ethnicity" = ethnicity_name, "Race" = race,
           "Religion" = religion_name, "Sex" = sex, "Age" = age,
           "Consanguinity" = consaguinity,
@@ -3201,7 +3221,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Country", "Province", "District", "Recruitment site",
           "Latitude", "Longitude", "Study period", "Risk of bias",
           "Globin phenotype", "IthaID", "Sample size",
-          "Population tested positive", "Value", "Cohort",
+          "Population tested positive", "Value", "Metric", "Cohort",
           "Nationality", "Ethnicity", "Race", "Religion",
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
@@ -3259,6 +3279,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
       sf_df = sf_df %>%
+        dplyr::select(-any_of("Metric")) %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -3266,7 +3287,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Risk of bias" = bias_flag, "Globin phenotype" = globin_phenotype,
           "IthaID" = ithaID, "Sample size" = sample_size,
           "Population tested positive" = count, "Value" = value,
-          "Cohort" = status_group, "Nationality" = nationality,
+          "Metric" = metric_unit, "Cohort" = status_group, "Nationality" = nationality,
           "Ethnicity" = ethnicity_name, "Race" = race,
           "Religion" = religion_name, "Sex" = sex, "Age" = age,
           "Consanguinity" = consaguinity,
@@ -3277,7 +3298,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Country", "Province", "District", "Recruitment site",
           "Latitude", "Longitude", "Study period", "Risk of bias",
           "Globin phenotype", "IthaID", "Sample size",
-          "Population tested positive", "Value", "Cohort",
+          "Population tested positive", "Value", "Metric", "Cohort",
           "Nationality", "Ethnicity", "Race", "Religion",
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
@@ -3335,6 +3356,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
       sf_df = sf_df %>%
+        dplyr::select(-any_of("Metric")) %>%
         rename(
           "Country" = Region, "Province" = Region1, "District" = Region2,
           "Recruitment site" = recruitment_site, "Latitude" = latitude,
@@ -3342,7 +3364,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Risk of bias" = bias_flag, "Globin phenotype" = globin_phenotype,
           "IthaID" = ithaID, "Sample size" = sample_size,
           "Population tested positive" = count, "Value" = value,
-          "Cohort" = status_group, "Nationality" = nationality,
+          "Metric" = metric_unit, "Cohort" = status_group, "Nationality" = nationality,
           "Ethnicity" = ethnicity_name, "Race" = race,
           "Religion" = religion_name, "Sex" = sex, "Age" = age,
           "Consanguinity" = consaguinity,
@@ -3353,7 +3375,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Country", "Province", "District", "Recruitment site",
           "Latitude", "Longitude", "Study period", "Risk of bias",
           "Globin phenotype", "IthaID", "Sample size",
-          "Population tested positive", "Value", "Cohort",
+          "Population tested positive", "Value", "Metric", "Cohort",
           "Nationality", "Ethnicity", "Race", "Religion",
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
