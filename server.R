@@ -476,7 +476,9 @@ server = function(input, output, session) {
                var tableNode = api.table().node();
                function blockInjectedRow(e) {
                  var tr = e.target.closest('tr');
-                 if (!tr || api.row(tr).length !== 0) { return; }
+                 // Header rows are not DataTables rows either; letting them
+                 // through keeps column sorting working.
+                 if (!tr || !tr.closest('tbody') || api.row(tr).length !== 0) { return; }
                  e.stopImmediatePropagation();
                  if (e.type === 'click') {
                    var link = e.target.closest('a[href]');
