@@ -1880,8 +1880,15 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
       Mean = mean(value, na.rm = TRUE)
     ) %>%
     ungroup() %>%
+    # Weighted mean: random-effects meta-analysis of the proportions
+    # count / sample_size on the Freeman-Tukey double-arcsine scale (metafor
+    # escalc(measure = "PFT"), rma REML), back-transformed to the metric unit.
+    # Studies with count == 0 are included: the double-arcsine transform is
+    # defined for zero counts (one reason it is used for proportions), and
+    # leaving them out biases the pooled value upwards. Only studies without a
+    # count or a positive sample size are left out.
     mutate(
-      Exclude = ifelse(is.na(count) | is.na(sample_size) | Entries == 0 | count == 0, TRUE, FALSE),
+      Exclude = ifelse(is.na(count) | is.na(sample_size) | sample_size <= 0 | Entries == 0, TRUE, FALSE),
       Scale = ifelse(metric_unit == "percent", 100, 100000)
     ) %>%
     group_by(.data[[group_col]]) %>%
@@ -1892,19 +1899,26 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
         valid_n == 1 ~ value[which(!Exclude)[1]],
         valid_n >= 2 ~ tryCatch(
           {
+            # metafor's PFT is already halved,
+            # yi = 1/2 * (asin(sqrt(x / (n + 1))) + asin(sqrt((x + 1) / (n + 1)))),
+            # so the proportion is sin(yi)^2. (sin(yi / 2)^2, used before,
+            # returned about a quarter of the pooled value: 50% -> 14.6%.)
             (sin(predict(rma(
               yi,
               vi,
               data = escalc(
                 xi = count,
                 ni = sample_size,
-                data = pick() %>% filter(Exclude == FALSE),
+                # pick() needs a selection: a bare pick() errors ("Must supply at
+                # least one input"), which tryCatch turned into NA, so regions
+                # with 2+ studies had no weighted mean at all.
+                data = pick(everything()) %>% filter(Exclude == FALSE),
                 measure = "PFT",
                 add = 0
               ),
               method = "REML",
               level = 95
-            ))$pred / 2))^2 * Scale[which(!Exclude)[1]]
+            ))$pred))^2 * Scale[which(!Exclude)[1]]
           },
           error = function(e) NA_real_
         ),
