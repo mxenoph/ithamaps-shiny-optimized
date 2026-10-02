@@ -296,7 +296,7 @@ server = function(input, output, session) {
 
   build_ithaid_link = function(itha_id, root) {
     id_chr = as.character(itha_id %||% "")
-    if (!nzchar(id_chr) || is.na(id_chr) || identical(id_chr, "Not applicable")) {
+    if (!nzchar(id_chr) || is.na(id_chr) || id_chr %in% c("Not applicable", "None")) {
       return(id_chr)
     }
 
@@ -306,6 +306,98 @@ server = function(input, output, session) {
       "<a href=\"", htmltools::htmlEscape(href), "\" target=\"_blank\" rel=\"noopener noreferrer\">",
       safe_id,
       "</a>"
+    )
+  }
+
+  # Comma-separated IthaIDs (grouped relative allele frequency rows), each linked.
+  build_ithaid_links = function(itha_ids, root) {
+    ids = strsplit(as.character(itha_ids %||% ""), ", ", fixed = TRUE)[[1]]
+    if (length(ids) == 0) {
+      return(as.character(itha_ids %||% ""))
+    }
+    paste(vapply(ids, build_ithaid_link, character(1), root = root), collapse = ", ")
+  }
+
+  # Extra columns for grouped relative allele frequency rows (one per cohort x
+  # region x locus, see collapse_raf_group() in global.R).
+  add_raf_group_cols = function(df, SubsetE) {
+    if (!"raf_unit_key" %in% names(SubsetE)) {
+      return(df)
+    }
+    df %>%
+      mutate(
+        `Variants in group` = SubsetE$n_group_variants,
+        `Locus total (%)` = SubsetE$raf_total,
+        `Total check` = SubsetE$raf_status,
+        .after = "IthaID"
+      )
+  }
+
+  # Child-row HTML per grouped relative allele frequency row: the unit's
+  # individual entries (all variants at the locus), group variants first.
+  build_raf_unit_details = function(raf_entries, unit_keys, root) {
+    if (is.null(raf_entries) || nrow(raf_entries) == 0) {
+      return(list())
+    }
+    entries = raf_entries %>%
+      filter(raf_unit_key %in% unit_keys) %>%
+      arrange(desc(in_group), desc(value))
+    lapply(split(entries, entries$raf_unit_key), function(rows) {
+      names_chr = unname(ithagenes_variant_names[as.character(rows$ithaID)])
+      cells = data.frame(
+        IthaID = vapply(rows$ithaID, build_ithaid_link, character(1), root = root),
+        Variant = htmltools::htmlEscape(ifelse(is.na(names_chr), "", names_chr)),
+        `Globin phenotype` = vapply(rows$phenotype, build_globin_group_hint, character(1)),
+        `In selected group` = ifelse(rows$in_group, "Yes", "No"),
+        `Population tested positive` = ifelse(is.na(rows$count), "Unspecified", as.character(rows$count)),
+        `Sample size` = ifelse(is.na(rows$sample_size), "Unspecified", as.character(rows$sample_size)),
+        `Value (%)` = as.character(rows$value),
+        Notes = htmltools::htmlEscape(as.character(rows$note)),
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+      paste0(
+        "<div class='px-2 py-2'>",
+        "<div style='font-weight:600; margin-bottom:6px;'>Individual entries for this cohort and locus (",
+        htmltools::htmlEscape(as.character(rows$locus[1])), ", total ", round(sum(rows$value, na.rm = TRUE), 2), "%)</div>",
+        "<div style='overflow-x:auto;'>",
+        "<table class='table table-sm table-bordered' style='font-size:0.82rem; margin-bottom:0;'>",
+        "<thead><tr>", paste0("<th>", names(cells), "</th>", collapse = ""), "</tr></thead>",
+        "<tbody>",
+        paste(apply(cells, 1, function(row) paste0("<tr>", paste0("<td>", row, "</td>", collapse = ""), "</tr>")), collapse = ""),
+        "</tbody></table></div></div>"
+      )
+    })
+  }
+
+  # Header tooltips for the grouped relative allele frequency table.
+  raf_group_header_hints = c(
+    "Value" = paste(
+      "Sum of the relative frequencies (%) of this cohort's variants with the selected globin phenotype",
+      "(= 100 x Population tested positive / Sample size). 0 if the cohort has none of them."
+    ),
+    "Population tested positive" = "Mutant alleles in this cohort carrying a variant with the selected globin phenotype.",
+    "Sample size" = "Mutant alleles characterised in this cohort at this locus.",
+    "Variants in group" = "Number of this cohort's variants with the selected globin phenotype.",
+    "Locus total (%)" = "Sum of the relative frequencies of all of this cohort's variants at the locus; ~100% when all its mutant alleles are accounted for.",
+    "Total check" = paste(
+      "Complete: the variants' counts add up to the sample size. Partial: fewer (not all alleles characterised or entered).",
+      "None found: none of the listed variants was found. Over 100%: more alleles than the sample size (likely a data-entry error).",
+      "Judged from the values (within 0.5 of 100%) when a count is missing."
+    )
+  )
+
+  # JS (for a DT initComplete body) that sets a title tooltip on the header
+  # cells whose text is a name of `hints`.
+  header_hints_js = function(hints) {
+    sprintf(
+      "var headerHints = %s;
+               $(api.table().header()).find('tr:first-child th').each(function() {
+                 var hint = headerHints[$(this).text().trim()];
+                 if (hint) { this.title = hint; this.style.cursor = 'help'; this.style.textDecoration = 'underline dotted'; }
+               });
+",
+      jsonlite::toJSON(as.list(hints), auto_unbox = TRUE)
     )
   }
 
@@ -346,6 +438,76 @@ server = function(input, output, session) {
       "<span title=\"", htmltools::htmlEscape(hint, attribute = TRUE),
       "\" style=\"cursor:help; border-bottom:1px dotted;\">",
       htmltools::htmlEscape(group_chr), "</span>"
+    )
+  }
+
+  # JS (for a DT initComplete body, after `var api = this.api();`) that toggles a
+  # child row with the HTML in `details_json` (an object keyed by the value of
+  # column `key_col`) when a td.dt-control cell is clicked.
+  child_rows_js = function(details_json, key_col) {
+    sprintf(
+      "var detailsByKey = %s;
+               var keyCol = %d;
+               // BUG (verified via live DOM inspection, DataTables 1.13.6):
+               // row.child() inserts one wrapper <tr><td colspan=N>...</td></tr> into the
+               // SAME <tbody> as normal rows, with NO distinguishing class (no 'child' class
+               // exists on it). DT's own row-selection handler is a jQuery delegated listener
+               // `table.on('mousedown.dt', 'tbody tr', ...)`, bound in the bubble phase on the
+               // <table> element. Because jQuery delegation matches ANY 'tr' descendant of ANY
+               // 'tbody' (not scoped by nesting depth), a mousedown anywhere inside our nested
+               // details table also resolves to that wrapper <tr> and gets 'selected' toggled
+               // onto it. Since the wrapper's only child is one large <td colspan>, the
+               // DataTables CSS rule `tr.selected > *` sets color:white on it — which then
+               // CASCADES (color inherits) into every nested cell, while the inset box-shadow
+               // background does NOT cascade, leaving white text on a non-blue background
+               // (invisible text), and a blue box only where the wrapper td shows through.
+               //
+               // Fix: use the public row() API (not class names, which differ across DT
+               // versions) to detect real vs. injected rows — api.row(tr).length is 1 for a
+               // genuine DataTables row and 0 for our injected wrapper/nested rows. Intercept
+               // 'mousedown' (the event DT actually listens for) in the CAPTURE phase directly
+               // on the <table> node, which is guaranteed to run before DT's bubble-phase
+               // handler on that same node. stopImmediatePropagation() also blocks the
+               // browser's default action for the click target, so for <a href> clicks inside
+               // child rows we must re-trigger navigation manually via window.open().
+               // Verified with a live Playwright session against this exact table: normal row
+               // selection is unaffected, links open exactly once, and no 'selected' class or
+               // white-text regression occurs on child-row content.
+               var tableNode = api.table().node();
+               function blockInjectedRow(e) {
+                 var tr = e.target.closest('tr');
+                 if (!tr || api.row(tr).length !== 0) { return; }
+                 e.stopImmediatePropagation();
+                 if (e.type === 'click') {
+                   var link = e.target.closest('a[href]');
+                   if (link) { window.open(link.href, link.target || '_blank'); }
+                 }
+               }
+               tableNode.addEventListener('mousedown', blockInjectedRow, true);
+               tableNode.addEventListener('click',     blockInjectedRow, true);
+               // Expand / collapse child rows on dt-control cell click.
+               api.table().container().addEventListener('click', function(evt) {
+                 var cell = evt.target.closest('td.dt-control');
+                 if (!cell) { return; }
+                 var tr = cell.closest('tr');
+                 var row = api.row(tr);
+                 if (!row || !row.length) { return; }
+                 if (row.child.isShown()) {
+                   row.child.hide();
+                   tr.classList.remove('shown');
+                   cell.innerHTML = '<span style=font-weight:700;>+</span>';
+                 } else {
+                   var rowData = row.data();
+                   var key = String(rowData[keyCol]);
+                   var childHtml = detailsByKey[key] || '<div class=\"px-2 py-1 text-muted\">No individual entries available.</div>';
+                   row.child(childHtml).show();
+                   tr.classList.add('shown');
+                   cell.innerHTML = '<span style=font-weight:700;>-</span>';
+                 }
+               });
+",
+      details_json,
+      key_col
     )
   }
 
@@ -432,6 +594,10 @@ server = function(input, output, session) {
   })
   SubsetHCP_raw_r = reactive({
     query_bundle()$SubsetHCPRaw
+  })
+  # Individual entries behind each grouped relative allele frequency row.
+  SubsetRAFEntries_r = reactive({
+    query_bundle()$SubsetRAFEntries
   })
   DataType_r = reactive({
     query_bundle()$DataType %||% "Curated data"
@@ -1278,17 +1444,23 @@ server = function(input, output, session) {
         paste0(htmltools::htmlEscape(ifelse(is.na(citation), "", citation)), " (", source_short, ")"),
         source_short
       )
+      # Grouped relative allele frequency columns; NA (row dropped below) otherwise.
+      raf_col = function(data, col, i) {
+        if (col %in% names(data) && "raf_unit_key" %in% names(data)) as.character(data[[col]][i]) else NA_character_
+      }
       lapply(1:nrow(SubsetE), function(i) {
         metric_i = as.character(SubsetE$metric_unit[i])
         value_field = if (!is.na(metric_i) && nzchar(metric_i)) paste0("Value (", metric_i, ")") else "Value"
         fields = c(
           "Country", "Province", "District", value_field, "Study period", "Risk of bias", "Globin phenotype", "IthaID",
-          "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
+          "Variants in group", "Locus total (%)", "Total check", "Sample size", "Population tested positive", "Cohort", "Nationality", "Ethnicity", "Race", "Religion",
           "Sex", "Age", "Consanguinity", "Diagnostic method", "Recruitment site", "Coordinates", "Notes", "Source"
         )
         values = c(
           SubsetE$Region[i], SubsetE$Region1[i], SubsetE$Region2[i], SubsetE$value[i], SubsetE$timeframe[i],
-          SubsetE$bias_flag[i], SubsetE$globin_phenotype[i], SubsetE$ithaID[i], SubsetE$sample_size[i],
+          SubsetE$bias_flag[i], SubsetE$globin_phenotype[i], SubsetE$ithaID[i],
+          raf_col(SubsetE, "n_group_variants", i),
+          raf_col(SubsetE, "raf_total", i), raf_col(SubsetE, "raf_status", i), SubsetE$sample_size[i],
           SubsetE$count[i], SubsetE$status_group[i], SubsetE$nationality[i], SubsetE$ethnicity_name[i],
           SubsetE$race[i], SubsetE$religion_name[i], SubsetE$sex[i], SubsetE$age[i], SubsetE$consaguinity[i],
           SubsetE$diagnostic_method[i], SubsetE$recruitment_site[i],
@@ -2202,10 +2374,11 @@ server = function(input, output, session) {
       })
     }
 
-    make_dropdown_filter_init = function(filter_meta_json) {
+    make_dropdown_filter_init = function(filter_meta_json, extra_js = "") {
       JS(sprintf(
         "function(settings, json) {
            var api = this.api();
+           %s
            var filterMeta = %s;
            if (!Array.isArray(filterMeta)) {
              filterMeta = Object.keys(filterMeta || {}).map(function(k) { return filterMeta[k]; });
@@ -2255,6 +2428,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
              $select.on('change', function() { applyFilter($(this).val()); });
            });
          }",
+        extra_js,
         filter_meta_json
       ))
     }
@@ -2407,65 +2581,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           initComplete = JS(sprintf(
             "function(settings, json) {
                var api = this.api();
-               var detailsByCountry = %s;
-               var keyCol = %d;
-               // BUG (verified via live DOM inspection, DataTables 1.13.6):
-               // row.child() inserts one wrapper <tr><td colspan=N>...</td></tr> into the
-               // SAME <tbody> as normal rows, with NO distinguishing class (no 'child' class
-               // exists on it). DT's own row-selection handler is a jQuery delegated listener
-               // `table.on('mousedown.dt', 'tbody tr', ...)`, bound in the bubble phase on the
-               // <table> element. Because jQuery delegation matches ANY 'tr' descendant of ANY
-               // 'tbody' (not scoped by nesting depth), a mousedown anywhere inside our nested
-               // details table also resolves to that wrapper <tr> and gets 'selected' toggled
-               // onto it. Since the wrapper's only child is one large <td colspan>, the
-               // DataTables CSS rule `tr.selected > *` sets color:white on it — which then
-               // CASCADES (color inherits) into every nested cell, while the inset box-shadow
-               // background does NOT cascade, leaving white text on a non-blue background
-               // (invisible text), and a blue box only where the wrapper td shows through.
-               //
-               // Fix: use the public row() API (not class names, which differ across DT
-               // versions) to detect real vs. injected rows — api.row(tr).length is 1 for a
-               // genuine DataTables row and 0 for our injected wrapper/nested rows. Intercept
-               // 'mousedown' (the event DT actually listens for) in the CAPTURE phase directly
-               // on the <table> node, which is guaranteed to run before DT's bubble-phase
-               // handler on that same node. stopImmediatePropagation() also blocks the
-               // browser's default action for the click target, so for <a href> clicks inside
-               // child rows we must re-trigger navigation manually via window.open().
-               // Verified with a live Playwright session against this exact table: normal row
-               // selection is unaffected, links open exactly once, and no 'selected' class or
-               // white-text regression occurs on child-row content.
-               var tableNode = api.table().node();
-               function blockInjectedRow(e) {
-                 var tr = e.target.closest('tr');
-                 if (!tr || api.row(tr).length !== 0) { return; }
-                 e.stopImmediatePropagation();
-                 if (e.type === 'click') {
-                   var link = e.target.closest('a[href]');
-                   if (link) { window.open(link.href, link.target || '_blank'); }
-                 }
-               }
-               tableNode.addEventListener('mousedown', blockInjectedRow, true);
-               tableNode.addEventListener('click',     blockInjectedRow, true);
-               // Expand / collapse child rows on dt-control cell click.
-               api.table().container().addEventListener('click', function(evt) {
-                 var cell = evt.target.closest('td.dt-control');
-                 if (!cell) { return; }
-                 var tr = cell.closest('tr');
-                 var row = api.row(tr);
-                 if (!row || !row.length) { return; }
-                 if (row.child.isShown()) {
-                   row.child.hide();
-                   tr.classList.remove('shown');
-                   cell.innerHTML = '<span style=font-weight:700;>+</span>';
-                 } else {
-                   var rowData = row.data();
-                   var key = String(rowData[keyCol]);
-                   var childHtml = detailsByCountry[key] || '<div class=\"px-2 py-1 text-muted\">No individual entries available.</div>';
-                   row.child(childHtml).show();
-                   tr.classList.add('shown');
-                   cell.innerHTML = '<span style=font-weight:700;>-</span>';
-                 }
-               });
+               %s
                var filterMeta = %s;
                if (!Array.isArray(filterMeta)) {
                  filterMeta = Object.keys(filterMeta || {}).map(function(k) { return filterMeta[k]; });
@@ -2509,8 +2625,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
                  });
                }
              }",
-            details_by_country_json,
-            key_col_idx,
+            child_rows_js(details_by_country_json, key_col_idx),
             hcp_filter_meta_json
           )),
           rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
@@ -2566,17 +2681,40 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
 
     query_info = query_bundle()$query_info %||% list()
     df = drop_measure_irrelevant_cols(df, query_info)
+    grouped_raf = is_grouped_raf_query(query_info) && "raf_unit_key" %in% names(SubsetE)
 
+    ithanet_root = infer_ithanet_root()
     if ("IthaID" %in% names(df)) {
-      ithanet_root = infer_ithanet_root()
       df = df %>%
-        mutate(IthaID = vapply(IthaID, function(x) build_ithaid_link(x, ithanet_root), character(1)))
+        mutate(IthaID = vapply(IthaID, function(x) build_ithaid_links(x, ithanet_root), character(1)))
     }
     html_cols = c("IthaID", "Source")
-    if (is_grouped_raf_query(query_info) && "Globin phenotype" %in% names(df)) {
+    child_js = ""
+    column_defs = list()
+    if (grouped_raf) {
       df = df %>%
-        mutate(`Globin phenotype` = vapply(`Globin phenotype`, build_globin_group_hint, character(1)))
-      html_cols = c(html_cols, "Globin phenotype")
+        mutate(`Globin phenotype` = vapply(`Globin phenotype`, build_globin_group_hint, character(1))) %>%
+        add_raf_group_cols(SubsetE) %>%
+        mutate(
+          Expand = "<span style='font-weight:700;'>+</span>",
+          raf_unit_key = SubsetE$raf_unit_key,
+          .before = 1
+        )
+      html_cols = c(html_cols, "Globin phenotype", "Expand")
+      # Comma-separated IthaID lists make poor dropdown options.
+      no_filter_cols = c(no_filter_cols, "Expand", "raf_unit_key", "IthaID")
+      hidden_display_cols = c(hidden_display_cols, "raf_unit_key")
+
+      raf_details = build_raf_unit_details(SubsetRAFEntries_r(), unique(SubsetE$raf_unit_key), ithanet_root)
+      # rownames=TRUE: DT index of a column = its 1-based position in df.
+      child_js = paste0(
+        child_rows_js(
+          jsonlite::toJSON(raf_details, auto_unbox = TRUE),
+          which(names(df) == "raf_unit_key")
+        ),
+        header_hints_js(raf_group_header_hints)
+      )
+      column_defs = list(list(orderable = FALSE, className = "dt-control", targets = which(names(df) == "Expand")))
     }
 
     table_widget = datatable(df,
@@ -2587,10 +2725,13 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         pageLength = 10,
         lengthChange = FALSE,
         scrollX = FALSE,
-        initComplete = make_dropdown_filter_init(jsonlite::toJSON(unname(build_filter_meta(df, no_filter_cols)), auto_unbox = TRUE)),
+        initComplete = make_dropdown_filter_init(
+          jsonlite::toJSON(unname(build_filter_meta(df, no_filter_cols)), auto_unbox = TRUE),
+          child_js
+        ),
         rowCallback = JS("function(row, data) {", "$(row).css('min-height', '30px');", "}"),
         # rownames=TRUE (default): row-names occupy DT index 0, so R's which() 1-based = DT column index.
-        columnDefs = list(list(visible = FALSE, targets = which(names(df) %in% hidden_display_cols)))
+        columnDefs = c(column_defs, list(list(visible = FALSE, targets = which(names(df) %in% hidden_display_cols))))
       ),
       class = "stripe hover cell-border"
     )
@@ -3267,7 +3408,8 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      df = drop_measure_irrelevant_cols(df, query_bundle()$query_info %||% list())
+      df = drop_measure_irrelevant_cols(df, query_bundle()$query_info %||% list()) %>%
+        add_raf_group_cols(SubsetE)
       write.csv(df, file, row.names = FALSE)
     }
   )
@@ -3311,7 +3453,8 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         return(invisible(NULL))
       }
       SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
-      sf_df = entries_to_point_sf(SubsetE)
+      pts = entries_to_point_sf(SubsetE)
+      sf_df = pts
       if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
       sf_df = sf_df %>%
         dplyr::select(-any_of("Metric")) %>%
@@ -3338,7 +3481,8 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      sf_df = drop_measure_irrelevant_cols(sf_df, query_bundle()$query_info %||% list())
+      sf_df = drop_measure_irrelevant_cols(sf_df, query_bundle()$query_info %||% list()) %>%
+        add_raf_group_cols(pts)
       st_write(sf_df, file, driver = "GeoJSON", delete_dsn = TRUE)
     }
   )
@@ -3382,7 +3526,8 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         return(invisible(NULL))
       }
       SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
-      sf_df = entries_to_point_sf(SubsetE)
+      pts = entries_to_point_sf(SubsetE)
+      sf_df = pts
       if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
       sf_df = sf_df %>%
         dplyr::select(-any_of("Metric")) %>%
@@ -3409,7 +3554,8 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      sf_df = drop_measure_irrelevant_cols(sf_df, query_bundle()$query_info %||% list())
+      sf_df = drop_measure_irrelevant_cols(sf_df, query_bundle()$query_info %||% list()) %>%
+        add_raf_group_cols(pts)
       st_write(sf_df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
     }
   )

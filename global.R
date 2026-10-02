@@ -449,6 +449,22 @@ globin_phenotype_group_hints = local({
   )
 })
 
+# Locus (locus.name via ithamaps_entries.locus_id) a group's variants sit on; a
+# group's frequency is computed only from cohort data for that locus. δ-globin
+# (HBD) lies in the β-globin cluster, so δ variants are β-locus entries. "Other"
+# has no single locus and is computed per cohort x locus for every locus.
+globin_phenotype_group_locus = c(
+  "α0" = "α-locus", "α+" = "α-locus",
+  "β0" = "β-locus", "β+" = "β-locus",
+  "δ0" = "β-locus", "δ+" = "β-locus"
+)
+
+# When a unit's counts are incomplete (NULL count or sample_size), its total is
+# judged from the values instead: within this many percentage points of 100
+# counts as complete. In units whose counts add up exactly to sample_size, the
+# rounded per-variant values sum to within 0.5 of 100 (803 of 834, 2026-10-02).
+raf_total_tolerance = 0.5
+
 db_ithamaps_entries = db_ithamaps_entries %>%
   select(-starts_with("v_")) %>%
   rename("phen_id" = globin_phenotype) %>%
@@ -542,13 +558,15 @@ db_ithamaps_entries = db_ithamaps_entries %>%
   # Keep the original metric FK for diagnostics (distinct from the Joomla
   # "Metric" summary-statistic parameter).
   mutate(metric_fk_id = metric_id) %>%
+  # cohort_id, regions_id and locus are kept: grouped relative allele frequency
+  # sums variants per cohort x region x locus (collapse_raf_group()).
   select(
-    -phen_id, -regions_id, -metric_id, -cause_id, -measure_id,
-    -primary_ontology, -secondary_ontology, -cohort_id, -cohort_name,
+    -phen_id, -metric_id, -cause_id, -measure_id,
+    -primary_ontology, -secondary_ontology, -cohort_name,
     -sex_group_id, -age_group_id, -ethnicity_id, -religion_id,
     -chr_id, -build, -refseq, -version, -locus_id, -expert_id,
     -j_criteria_id, -criterium_id, -response_id, -created.x,
-    -updated.x, -created.y, -updated.y, -created.x.x, -locus,
+    -updated.x, -created.y, -updated.y, -created.x.x,
     -updated.x.x, -created.y.y, -updated.y.y, -ihme_id, -country_id, -nationality
   ) %>%
   rename("nationality" = countryName) %>%
@@ -980,6 +998,7 @@ IthaID = data.frame(
   ID = c(db_ithagenes_common$ithaID),
   Option = c(db_ithagenes_common$ithaID)
 )
+ithagenes_variant_names = setNames(as.character(db_ithagenes_common$common_name), as.character(db_ithagenes_common$ithaID))
 
 GlobinPheRAF = data.frame(
   ID = db_globin_phenotypes$id,
@@ -1518,7 +1537,7 @@ Search = function(Item, Identifier, Data) {
 # (Parse, Extract, Search are defined above and used per-session in server)
 
 query_bundle_cache = new.env(parent = emptyenv())
-query_bundle_cache_version = "timings_v4_links"
+query_bundle_cache_version = "timings_v5_raf_groups"
 
 ithamaps_debug_mode = tolower(trimws(Sys.getenv("ITHAMAPS_DEBUG_MODE", unset = "false"))) %in% c("1", "true", "yes", "on")
 query_bundle_debug_store = new.env(parent = emptyenv())
@@ -1664,14 +1683,117 @@ metric_title_with_unit = function(metric_name, unit) {
 
 # Ported from IthaMaps-shinyapp/app.R lines 1022-1063: apply the curated-data
 # outlier filters and guarded weighted-mean path before aggregated metrics.
+# ---------------------------------------------------------------------------
+# Relative allele frequency, grouped by globin phenotype
+#
+# For this measure, sample_size is the number of mutant alleles characterised
+# in the cohort and count the number of those carrying the entry's variant
+# (ithaID), so value = 100 * count / sample_size. All variants of one locus in
+# one cohort share that denominator. The unit is cohort x region x locus: a
+# cohort recruited at several locations (MultiLocation) is stored once per
+# region with the same values.
+# ---------------------------------------------------------------------------
+raf_unit_key = function(data) {
+  paste(data$cohort_id, data$regions_id, data$locus, sep = "|")
+}
+
+# Per unit: are all of the cohort's mutant alleles at the locus accounted for?
+# Judged exactly from the counts (sum of count vs sample_size) when every count
+# is known, otherwise from the values (sum ~100%). Partial means not all alleles
+# were characterised or entered (e.g. a cohort listing only the variants it
+# screened for); 0 means none of the listed variants was found; over 100 points
+# to a data-entry error. raf_total (the summed values) is what the table shows.
+check_raf_totals = function(raf_entries, tol = raf_total_tolerance) {
+  raf_entries %>%
+    mutate(raf_unit_key = raf_unit_key(.)) %>%
+    group_by(raf_unit_key) %>%
+    summarise(
+      raf_total = round(sum(value, na.rm = TRUE), 2),
+      raf_count_total = if (any(is.na(count))) NA_real_ else sum(as.numeric(count)),
+      raf_alleles = as.numeric(dplyr::first(sample_size)),
+      raf_n_variants = n_distinct(ithaID),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      counts_known = !is.na(raf_count_total) & !is.na(raf_alleles) & raf_alleles > 0,
+      raf_status = case_when(
+        raf_total == 0 & (!counts_known | raf_count_total == 0) ~ "None found (0%)",
+        counts_known & raf_count_total > raf_alleles ~ "Over 100%",
+        counts_known & raf_count_total == raf_alleles ~ "Complete (~100%)",
+        counts_known ~ "Partial (<100%)",
+        raf_total > 100 + tol ~ "Over 100%",
+        raf_total >= 100 - tol ~ "Complete (~100%)",
+        TRUE ~ "Partial (<100%)"
+      )
+    ) %>%
+    dplyr::select(raf_unit_key, raf_total, raf_n_variants, raf_status)
+}
+
+# One row per unit for the selected group: value and count are the sums over
+# the unit's variants in the group, so a unit with none of them contributes 0%
+# rather than being left out. Returns the collapsed rows and the unit's
+# individual entries (for the expandable table rows).
+collapse_raf_group = function(raf_entries, group) {
+  locus_needed = unname(globin_phenotype_group_locus[group])
+  if (length(locus_needed) == 1 && !is.na(locus_needed)) {
+    raf_entries = raf_entries %>% filter(locus == locus_needed)
+  }
+  raf_entries = raf_entries %>%
+    mutate(raf_unit_key = raf_unit_key(.), in_group = phenotype == group)
+
+  totals = check_raf_totals(raf_entries)
+  flagged = totals %>% filter(raf_status != "Complete (~100%)") %>% count(raf_status)
+  if (nrow(flagged) > 0) {
+    cat(
+      "[ithamaps-debug][raf-totals] group='", group, "' units=", nrow(totals), " flagged={",
+      paste0(flagged$raf_status, "=", flagged$n, collapse = ", "), "}\n",
+      sep = ""
+    )
+  }
+
+  group_sums = raf_entries %>%
+    group_by(raf_unit_key) %>%
+    summarise(
+      # Rounded to drop floating-point noise from summing (e.g. 91.46000289916991).
+      value = round(sum(value[in_group], na.rm = TRUE), 4),
+      # Unknown if any group variant lacks a count; 0 if the unit has none.
+      count = if (any(is.na(count[in_group]))) NA_integer_ else as.integer(sum(count[in_group])),
+      n_group_variants = sum(in_group),
+      ithaID = if (any(in_group)) paste(sort(unique(ithaID[in_group])), collapse = ", ") else "None",
+      note = {
+        notes = setdiff(unique(note), c(NA, "None"))
+        if (length(notes) > 0) paste(notes, collapse = "; ") else "None"
+      },
+      .groups = "drop"
+    )
+
+  collapsed = raf_entries %>%
+    distinct(raf_unit_key, .keep_all = TRUE) %>%
+    dplyr::select(-value, -count, -ithaID, -note, -in_group) %>%
+    left_join(group_sums, by = "raf_unit_key") %>%
+    left_join(totals, by = "raf_unit_key") %>%
+    mutate(phenotype = group)
+
+  list(SubsetE = collapsed, entries = raf_entries)
+}
+
 compute_outlier_aware_metric = function(data, group_col, metric_key) {
   names_before = colnames(data)
+  # Rows with the same sample_size/count/value count once per region (this also
+  # merges duplicate cohort records of one study). Grouped relative allele
+  # frequency rows (one per cohort x region x locus) also key on the cohort:
+  # many cohorts have 0 of the group's alleles, and equal numbers there are
+  # separate observations, while a MultiLocation cohort's copies still merge.
+  dedup_cols = c(
+    if ("raf_unit_key" %in% names(data)) c("cohort_id", "locus"),
+    "sample_size", "count", "value"
+  )
 
   filtered_data = data %>%
     filter(!is.na(.data[[group_col]])) %>%
     mutate(Exclude = ifelse(grepl("duplicated", note), TRUE, FALSE)) %>%
     group_by(.data[[group_col]]) %>%
-    distinct(sample_size, count, value, .keep_all = TRUE) %>%
+    distinct(across(all_of(dedup_cols)), .keep_all = TRUE) %>%
     mutate(
       entries = sum(!Exclude),
       Median = ifelse(entries > 1, median(value[!Exclude], na.rm = TRUE), NA_real_),
@@ -1703,7 +1825,7 @@ compute_outlier_aware_metric = function(data, group_col, metric_key) {
     ) %>%
     filter(is.na(Outlier)) %>%
     group_by(.data[[group_col]]) %>%
-    distinct(sample_size, count, value, .keep_all = TRUE) %>%
+    distinct(across(all_of(dedup_cols)), .keep_all = TRUE) %>%
     mutate(
       Entries = n(),
       Max = max(value, na.rm = TRUE),
@@ -2259,9 +2381,11 @@ build_query_bundle = function(raw_qs) {
           if (vField == "Grouped variants by globin phenotype" &&
             "GlobinPheRAF" %in% names(Info) && !is.na(Info$GlobinPheRAF)) {
             Field = GlobinPheRAF[GlobinPheRAF$Option == Info$GlobinPheRAF, "Option"]
-            # Keep `phenotype`: the data table shows it as "Globin phenotype".
-            result$SubsetE = result$SubsetE %>%
-              filter(phenotype == Field)
+            # One row per cohort x region x locus with the group's summed
+            # frequency; the metric below then summarises cohorts per region.
+            collapsed = collapse_raf_group(result$SubsetE, Field)
+            result$SubsetE = collapsed$SubsetE
+            result$SubsetRAFEntries = collapsed$entries
           }
           if (vField == "Individual variants" &&
             "IthaID" %in% names(Info) && !is.na(Info$IthaID)) {
@@ -2284,6 +2408,7 @@ build_query_bundle = function(raw_qs) {
   SubsetE = parameter_result$SubsetE
   SubsetHCP = parameter_result$SubsetHCP
   SubsetHCPRaw = SubsetHCP
+  SubsetRAFEntries = parameter_result$SubsetRAFEntries
   debug_capture("after_parameter_SubsetE", SubsetE)
   debug_capture("after_parameter_SubsetHCP", SubsetHCP)
 
@@ -2456,6 +2581,7 @@ build_query_bundle = function(raw_qs) {
 
   bundle = list(DataType = Info$DataType, query_info = Info, SubsetE = SubsetE, SubsetHCP = SubsetHCP, SubsetG = SubsetG, MetricN = MetricN, MetricUnit = MetricUnit, validation_errors = character(), timings = timing_list(timing_env))
   bundle$SubsetHCPRaw = SubsetHCPRaw
+  bundle$SubsetRAFEntries = SubsetRAFEntries
 
   if (isTRUE(debug_mode)) {
     query_bundle_debug_counter <<- query_bundle_debug_counter + 1L
