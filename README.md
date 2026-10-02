@@ -69,7 +69,9 @@ ithanet_site_root = "https://dev.ithanet.eu"      # default http://localhost/liv
 
 ### ITHANET database (`ithabase_mk`)
 
-All tables below are loaded into in-memory tibbles at startup and kept for the lifetime of the R process:
+All tables below are loaded into in-memory tibbles at startup and kept for the lifetime of the R process.
+
+The text columns of the lookup tables (country, locus, globin phenotypes, measure, metric, sex/age groups, ethnicities, religions, cause, healthcare policies) are normalised in the app with `normalize_label()` in `global.R`. This applies Unicode NFKC, folds dash variants to `-` and collapses whitespace. For example, `globin_phenotypes` id 2 is stored as `α⁺` (superscript plus) and becomes `α+`. Hard-coded label lists are compared with `label_in()`, which also ignores case. The DB is not changed, and every label that gets normalised is logged at startup (`[ithamaps] normalised …`).
 
 | In-memory object | Source table |
 |---|---|

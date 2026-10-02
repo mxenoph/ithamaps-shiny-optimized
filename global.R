@@ -297,6 +297,52 @@ dbDisconnect(Ithanet)
 
 rm(Ithanet, Datatables, set_options)
 
+# ---------------------------------------------------------------------------
+# Label normalisation. The app matches DB labels against hard-coded lists (e.g.
+# allowed globin phenotypes) and joins/filters on them, so a DB label written
+# with a typographic variant silently drops options or data: globin_phenotypes
+# id 2 is stored as "α⁺" (superscript plus, U+207A) while code expects "α+".
+# Labels of the lookup tables are normalised once here (in the app only; the DB
+# and other modules keep their spelling): Unicode compatibility form NFKC
+# (superscripts/subscripts, ligatures, full-width forms), dash/minus variants
+# to "-", and runs of whitespace (incl. non-breaking) to one space. Hard-coded
+# lists are compared through label_in(), which also ignores case.
+# ---------------------------------------------------------------------------
+normalize_label = function(x) {
+  if (!is.character(x)) {
+    return(x)
+  }
+  out = stringi::stri_trans_nfkc(x)
+  out = gsub("[\u2010-\u2015\u2212]", "-", out, perl = TRUE)
+  out = gsub("[\\s\u00A0]+", " ", out, perl = TRUE)
+  trimws(out)
+}
+
+label_in = function(x, allowed) {
+  tolower(normalize_label(as.character(x))) %in% tolower(normalize_label(allowed))
+}
+
+label_tables = intersect(
+  c("db_country", "db_locus", "db_globin_phenotypes", "db_measure", "db_metric", "db_sex_groups",
+    "db_age_groups", "db_ethnicities", "db_religions", "db_cause", "db_hc_policies"),
+  ls(pattern = "^db_")
+)
+for (tbl in label_tables) {
+  df = get(tbl)
+  for (col in names(df)[vapply(df, is.character, logical(1))]) {
+    normalised = normalize_label(df[[col]])
+    changed = !is.na(df[[col]]) & df[[col]] != normalised
+    if (any(changed)) {
+      pairs = unique(paste0("'", df[[col]][changed], "' -> '", normalised[changed], "'"))
+      cat("[ithamaps] normalised ", sum(changed), " label(s) in ", sub("^db_", "", tbl), ".", col, ": ",
+        paste(head(pairs, 5), collapse = ", "), if (length(pairs) > 5) ", ..." else "", "\n", sep = "")
+      df[[col]] = normalised
+    }
+  }
+  assign(tbl, df)
+}
+rm(label_tables, tbl, df, col, normalised, changed, pairs)
+
 # GBD (Global Burden of Disease) report data is published elsewhere and must not
 # be served by this app, whether epidemiological or healthcare. Mirrors:
 #   SELECT source_id FROM ithamaps_accumulated_sources
@@ -986,8 +1032,7 @@ GlobinPheAF = data.frame(
   ID = db_globin_phenotypes$id,
   Option = db_globin_phenotypes$name
 ) %>%
-  filter(Option %in% c("α0", "α⁺", "α-thalassaemia modifier", "non-deletional α+")) %>%
-  mutate(Option = ifelse(Option == "α⁺", "α+", Option))
+  filter(label_in(Option, c("α0", "α+", "α-thalassaemia modifier", "non-deletional α+")))
 
 VariantC = data.frame(
   ID = c(1, 2),
@@ -1004,8 +1049,7 @@ GlobinPheRAF = data.frame(
   ID = db_globin_phenotypes$id,
   Option = db_globin_phenotypes$name
 ) %>%
-  filter(Option %in% c("α0", "α⁺", "β0", "β+", "δ0", "δ+")) %>%
-  mutate(Option = ifelse(Option == "α⁺", "α+", Option)) %>%
+  filter(label_in(Option, c("α0", "α+", "β0", "β+", "δ0", "δ+"))) %>%
   rbind(data.frame(ID = 38, Option = "Other"))
 
 Metric = data.frame(
