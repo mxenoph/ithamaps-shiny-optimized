@@ -422,8 +422,9 @@ Note_function = function(end_year_assumed, region_comment, nationality_comment, 
 
 # Relative allele frequency "Grouped variants by globin phenotype": each IthaGenes
 # globin phenotype id (globin_phenotypes.id) maps to one group. A variant joins a
-# group only if exactly one of its IthaGenes phenotype annotations is mapped;
-# unmapped or multiply-annotated variants fall into "Other".
+# group if all of its mapped IthaGenes phenotype annotations fall in that group;
+# unmapped variants, or those whose annotations span several groups, fall into
+# "Other".
 globin_phenotype_groups = data.frame(
   identifier = c(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
   group = c("α0", "α+", "α+", "β0", "β+", "β+", "β+", "β+", "δ0", "δ+"),
@@ -436,14 +437,14 @@ globin_phenotype_group_hints = local({
   phen_names = ifelse(is.na(phen_names), paste0("id ", globin_phenotype_groups$identifier), phen_names)
   members = tapply(phen_names, globin_phenotype_groups$group, function(x) paste(unique(x), collapse = ", "))
   hints = paste0(
-    "Grouped as ", names(members), ": variant annotated in IthaGenes with exactly one of ", members,
-    " (variants with multiple annotations are grouped as Other)"
+    "Grouped as ", names(members), ": variant annotated in IthaGenes as ", members,
+    " (variants whose annotations span more than one group are grouped as Other)"
   )
   c(
     setNames(hints, names(members)),
     Other = paste0(
       "Grouped as Other: variant has no IthaGenes globin phenotype among ",
-      paste(unique(phen_names), collapse = ", "), ", or has more than one such annotation"
+      paste(unique(phen_names), collapse = ", "), ", or its annotations span more than one group"
     )
   )
 })
@@ -511,13 +512,14 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     left_join(globin_phenotype_groups %>%
       rename("phenotype" = group), by = "identifier") %>%
     filter(!is.na(phenotype)) %>%
-    select(-identifier) %>%
+    select(ithaID, phenotype) %>%
+    # A variant is ambiguous only when its annotations map to different groups.
+    # Counting annotation rows (n()) instead would send e.g. a variant annotated
+    # as both α+ and α+/α0 (both α+) to "Other". Keep only ithaID/phenotype so
+    # distinct() leaves one row per variant and the join adds no duplicates.
     group_by(ithaID) %>%
-    mutate(count = n()) %>%
+    filter(n_distinct(phenotype) == 1) %>%
     ungroup() %>%
-    mutate(phenotype = if_else(count >= 2, NA_character_, phenotype)) %>%
-    filter(!is.na(phenotype)) %>%
-    select(-count) %>%
     distinct(), by = "ithaID") %>%
   # Short source label + link, mirroring db_hcp_per_region (PMID/DOI/expert,
   # falling back to the full citation). Built here while pmid/doi/ihme_id are
