@@ -420,6 +420,34 @@ Note_function = function(end_year_assumed, region_comment, nationality_comment, 
   if (length(parts) > 0) paste(parts, collapse = ", ") else "None"
 }
 
+# Relative allele frequency "Grouped variants by globin phenotype": each IthaGenes
+# globin phenotype id (globin_phenotypes.id) maps to one group. A variant joins a
+# group only if exactly one of its IthaGenes phenotype annotations is mapped;
+# unmapped or multiply-annotated variants fall into "Other".
+globin_phenotype_groups = data.frame(
+  identifier = c(1, 2, 3, 4, 5, 7, 8, 9, 10, 11),
+  group = c("α0", "α+", "α+", "β0", "β+", "β+", "β+", "β+", "δ0", "δ+"),
+  stringsAsFactors = FALSE
+)
+
+# Hover hint per group shown on the "Globin phenotype" cell of the data table.
+globin_phenotype_group_hints = local({
+  phen_names = db_globin_phenotypes$name[match(globin_phenotype_groups$identifier, db_globin_phenotypes$id)]
+  phen_names = ifelse(is.na(phen_names), paste0("id ", globin_phenotype_groups$identifier), phen_names)
+  members = tapply(phen_names, globin_phenotype_groups$group, function(x) paste(unique(x), collapse = ", "))
+  hints = paste0(
+    "Grouped as ", names(members), ": variant annotated in IthaGenes with exactly one of ", members,
+    " (variants with multiple annotations are grouped as Other)"
+  )
+  c(
+    setNames(hints, names(members)),
+    Other = paste0(
+      "Grouped as Other: variant has no IthaGenes globin phenotype among ",
+      paste(unique(phen_names), collapse = ", "), ", or has more than one such annotation"
+    )
+  )
+})
+
 db_ithamaps_entries = db_ithamaps_entries %>%
   select(-starts_with("v_")) %>%
   rename("phen_id" = globin_phenotype) %>%
@@ -480,24 +508,8 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     select(nationality, countryName), by = "nationality") %>%
   left_join(db_ithagenes_globin_phen %>%
     rename("identifier" = phen_id) %>%
-    left_join(db_globin_phenotypes %>%
-      rename("identifier" = id, "phenotype" = name) %>%
-      select(identifier, phenotype) %>%
-      mutate(phenotype = case_when(
-        # id = 1 => -- α0
-        identifier %in% c(1) ~ "α0",
-        # id = 2 => -- α+, id = 3 => -- α+/α0
-        identifier %in% c(2, 3) ~ "α+",
-        # id = 4 => -- β0
-        identifier %in% c(4) ~ "β0",
-        # id = 5 => -- β+, id = 7 => -- β++, id = 8 => -- β++ (silent), id = 9 => -- β0 / β+
-        identifier %in% c(5, 7, 8, 9) ~ "β+",
-        # id = 10 => -- δ0
-        identifier %in% c(10) ~ "δ0",
-        # id = 11 => -- δ+
-        identifier %in% c(11) ~ "δ+",
-        TRUE ~ NA_character_
-      )), by = "identifier") %>%
+    left_join(globin_phenotype_groups %>%
+      rename("phenotype" = group), by = "identifier") %>%
     filter(!is.na(phenotype)) %>%
     select(-identifier) %>%
     group_by(ithaID) %>%
@@ -2245,9 +2257,9 @@ build_query_bundle = function(raw_qs) {
           if (vField == "Grouped variants by globin phenotype" &&
             "GlobinPheRAF" %in% names(Info) && !is.na(Info$GlobinPheRAF)) {
             Field = GlobinPheRAF[GlobinPheRAF$Option == Info$GlobinPheRAF, "Option"]
+            # Keep `phenotype`: the data table shows it as "Globin phenotype".
             result$SubsetE = result$SubsetE %>%
-              filter(phenotype == Field) %>%
-              select(-phenotype)
+              filter(phenotype == Field)
           }
           if (vField == "Individual variants" &&
             "IthaID" %in% names(Info) && !is.na(Info$IthaID)) {

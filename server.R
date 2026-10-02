@@ -309,6 +309,46 @@ server = function(input, output, session) {
     )
   }
 
+  is_grouped_raf_query = function(query_info) {
+    identical(as.character(query_info$Measure %||% ""), "Relative allele frequency") &&
+      identical(as.character(query_info$VariantC %||% ""), "Grouped variants by globin phenotype")
+  }
+
+  # For grouped relative allele frequency, the entry-level globin_phenotype is
+  # "Not applicable"; show the IthaGenes-derived group (`phenotype`) instead.
+  with_display_globin_phenotype = function(SubsetE, query_info) {
+    if (is_grouped_raf_query(query_info) && "phenotype" %in% names(SubsetE)) {
+      SubsetE$globin_phenotype = SubsetE$phenotype
+    }
+    SubsetE
+  }
+
+  # Globin phenotype is shown for allele frequency and grouped relative allele
+  # frequency; IthaID only for relative allele frequency (where it is set).
+  drop_measure_irrelevant_cols = function(df, query_info) {
+    measure = as.character(query_info$Measure %||% "")
+    if (!identical(measure, "Relative allele frequency")) {
+      df = df %>% dplyr::select(-any_of("IthaID"))
+    }
+    if (!identical(measure, "Allele frequency") && !is_grouped_raf_query(query_info)) {
+      df = df %>% dplyr::select(-any_of("Globin phenotype"))
+    }
+    df
+  }
+
+  build_globin_group_hint = function(group) {
+    group_chr = as.character(group %||% "")
+    hint = unname(globin_phenotype_group_hints[group_chr])
+    if (is.na(group_chr) || !nzchar(group_chr) || is.na(hint)) {
+      return(group_chr)
+    }
+    paste0(
+      "<span title=\"", htmltools::htmlEscape(hint, attribute = TRUE),
+      "\" style=\"cursor:help; border-bottom:1px dotted;\">",
+      htmltools::htmlEscape(group_chr), "</span>"
+    )
+  }
+
   startup_ua = substr(session$request$HTTP_USER_AGENT %||% "", 1, 140)
   startup_ref = substr(session$request$HTTP_REFERER %||% "", 1, 140)
   log_trace("session_start", paste0("ua='", startup_ua, "' ref='", startup_ref, "'"))
@@ -1227,7 +1267,7 @@ server = function(input, output, session) {
         HTML(table_html)
       })
     } else {
-      SubsetE = SubsetE_r()
+      SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
       # Full citation followed by the short linked label, e.g.
       # "Author et al. 2010 (PMID: 123)". When the short label is itself the
       # citation (no PMID/DOI/expert), show it once.
@@ -2147,9 +2187,9 @@ server = function(input, output, session) {
           return(list(type = "native", options = character(0)))
         }
         vals = as.character(col)
-        if (identical(col_name, "IthaID")) {
-          # IthaID cells are rendered as HTML anchors; dropdown filters should
-          # display only the raw ID text values.
+        if (col_name %in% c("IthaID", "Globin phenotype")) {
+          # IthaID (anchor) and grouped Globin phenotype (hint span) cells are
+          # HTML; dropdown filters should display only the raw text values.
           vals = gsub("<[^>]*>", "", vals)
         }
         vals = trimws(vals)
@@ -2485,7 +2525,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
       return(table_widget)
     }
 
-    SubsetE = SubsetE_r()
+    SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
     # SubsetE already carries the aggregated per-region `Metric`; drop it so the
     # per-entry metric name (metric_unit) can take the "Metric" column name.
     df = SubsetE %>%
@@ -2524,24 +2564,25 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         "Race", "Religion", "Sex", "Age", "Consanguinity", "Diagnostic method", "Notes", "Source"
       )
 
-    requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
-    if (!identical(requested_measure, "Allele frequency")) {
-      df = df %>% dplyr::select(-any_of("IthaID"))
-    }
-    if (!identical(requested_measure, "Relative allele frequency")) {
-      df = df %>% dplyr::select(-any_of("Globin phenotype"))
-    }
+    query_info = query_bundle()$query_info %||% list()
+    df = drop_measure_irrelevant_cols(df, query_info)
 
     if ("IthaID" %in% names(df)) {
       ithanet_root = infer_ithanet_root()
       df = df %>%
         mutate(IthaID = vapply(IthaID, function(x) build_ithaid_link(x, ithanet_root), character(1)))
     }
+    html_cols = c("IthaID", "Source")
+    if (is_grouped_raf_query(query_info) && "Globin phenotype" %in% names(df)) {
+      df = df %>%
+        mutate(`Globin phenotype` = vapply(`Globin phenotype`, build_globin_group_hint, character(1)))
+      html_cols = c(html_cols, "Globin phenotype")
+    }
 
     table_widget = datatable(df,
       selection = "multiple",
       filter = "top",
-      escape = setdiff(names(df), c("IthaID", "Source")),
+      escape = setdiff(names(df), html_cols),
       options = list(
         pageLength = 10,
         lengthChange = FALSE,
@@ -3200,7 +3241,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         write.csv(df, file, row.names = FALSE)
         return(invisible(NULL))
       }
-      SubsetE = SubsetE_r()
+      SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
       df = SubsetE %>%
         dplyr::select(-any_of("Metric")) %>%
         rename(
@@ -3226,13 +3267,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
-      if (!identical(requested_measure, "Allele frequency")) {
-        df = df %>% dplyr::select(-any_of("IthaID"))
-      }
-      if (!identical(requested_measure, "Relative allele frequency")) {
-        df = df %>% dplyr::select(-any_of("Globin phenotype"))
-      }
+      df = drop_measure_irrelevant_cols(df, query_bundle()$query_info %||% list())
       write.csv(df, file, row.names = FALSE)
     }
   )
@@ -3275,7 +3310,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         st_write(hcp_sf, file, driver = "GeoJSON", delete_dsn = TRUE)
         return(invisible(NULL))
       }
-      SubsetE = SubsetE_r()
+      SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
       sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GeoJSON export.")
       sf_df = sf_df %>%
@@ -3303,13 +3338,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
-      if (!identical(requested_measure, "Allele frequency")) {
-        sf_df = sf_df %>% dplyr::select(-any_of("IthaID"))
-      }
-      if (!identical(requested_measure, "Relative allele frequency")) {
-        sf_df = sf_df %>% dplyr::select(-any_of("Globin phenotype"))
-      }
+      sf_df = drop_measure_irrelevant_cols(sf_df, query_bundle()$query_info %||% list())
       st_write(sf_df, file, driver = "GeoJSON", delete_dsn = TRUE)
     }
   )
@@ -3352,7 +3381,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
         st_write(hcp_sf, dsn = file, driver = "GPKG", delete_dsn = TRUE)
         return(invisible(NULL))
       }
-      SubsetE = SubsetE_r()
+      SubsetE = with_display_globin_phenotype(SubsetE_r(), query_bundle()$query_info %||% list())
       sf_df = entries_to_point_sf(SubsetE)
       if (is.null(sf_df)) stop("No point coordinates available for GPKG export.")
       sf_df = sf_df %>%
@@ -3380,13 +3409,7 @@ var $select = $('<select class=\\\"form-control form-control-sm\\\"></select>');
           "Sex", "Age", "Consanguinity", "Diagnostic method",
           "Notes", "Source"
         )
-      requested_measure = as.character((query_bundle()$query_info %||% list())$Measure %||% "")
-      if (!identical(requested_measure, "Allele frequency")) {
-        sf_df = sf_df %>% dplyr::select(-any_of("IthaID"))
-      }
-      if (!identical(requested_measure, "Relative allele frequency")) {
-        sf_df = sf_df %>% dplyr::select(-any_of("Globin phenotype"))
-      }
+      sf_df = drop_measure_irrelevant_cols(sf_df, query_bundle()$query_info %||% list())
       st_write(sf_df, dsn = file, driver = "GPKG", delete_dsn = TRUE)
     }
   )

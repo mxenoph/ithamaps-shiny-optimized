@@ -125,7 +125,10 @@ The app uses a single-page `fluidPage` layout (Bootstrap 5, "litera" theme) with
 1. **Leaflet map** — choropleth map coloured by the selected metric value per region. Clicking a coloured polygon populates the popup sidebar on the left.
 2. **Popup sidebar** — shows the country, province, district, and aggregated metric value for the selected polygon.
 3. **Export buttons** — download the current filtered and visible data as `.png`, `.csv`, `.gpkg`, or `.geojson`.
-4. **Data table** — scrollable DT table of all individual records matching the query. Selecting a table row highlights the corresponding point on the Leaflet map.
+4. **Data table** — scrollable DT table of all individual records matching the query. Selecting a table row highlights the corresponding point on the Leaflet map. Measure-specific columns (same rule for the CSV/GeoJSON/GPKG exports, see `drop_measure_irrelevant_cols()` in `server.R`):
+   - *Allele frequency*: **Globin phenotype** (entry-level).
+   - *Relative allele frequency*: **IthaID**, linked to the IthaGenes page. With `VariantC` = Grouped variants by globin phenotype, also **Globin phenotype** showing the variant's group (α0, α+, β0, β+, δ0, δ+, Other); hovering the value shows the grouping rule (`globin_phenotype_groups` / `globin_phenotype_group_hints` in `global.R`).
+   - Other measures: neither column.
 
 When no valid query is supplied, or no data match the filters, a notification is shown and the map and table remain empty.
 
