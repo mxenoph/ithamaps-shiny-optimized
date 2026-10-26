@@ -607,7 +607,7 @@ db_ithamaps_entries = db_ithamaps_entries %>%
   # cohort_id, regions_id and locus are kept: grouped relative allele frequency
   # sums variants per cohort x region x locus (collapse_raf_group()).
   select(
-    -phen_id, -metric_id, -cause_id, -measure_id,
+    -phen_id, -metric_id, -cause_id,
     -primary_ontology, -secondary_ontology, -cohort_name,
     -sex_group_id, -age_group_id, -ethnicity_id, -religion_id,
     -chr_id, -build, -refseq, -version, -locus_id, -expert_id,
@@ -661,10 +661,13 @@ db_ithamaps_entries = db_ithamaps_entries %>%
     religion_name = ifelse(is.na(religion_name), "Unspecified", religion_name),
     consaguinity = ifelse(is.na(consaguinity), "Unspecified", consaguinity),
     recruitment_site = ifelse(is.na(recruitment_site), "Unspecified", recruitment_site),
-    globin_phenotype = ifelse(measure_name %in% c("Carrier prevalence", "Allele frequency", "Prevalence") & is.na(globin_phenotype), "Unspecified",
-      ifelse(!(measure_name %in% c("Carrier prevalence", "Allele frequency", "Prevalence")), "Not applicable", globin_phenotype)
+    # Matched on measure_id (1 = Prevalence, 9 = Carrier prevalence, 11 = Allele frequency)
+    # so renaming a measure does not change this mapping.
+    globin_phenotype = ifelse(measure_id %in% c(1, 9, 11) & is.na(globin_phenotype), "Unspecified",
+      ifelse(!(measure_id %in% c(1, 9, 11)), "Not applicable", globin_phenotype)
     ),
-    phenotype = ifelse(measure_name == "Relative allele frequency" & is.na(phenotype), "Other", phenotype),
+    # 16 = Relative allele frequency
+    phenotype = ifelse(measure_id == 16 & is.na(phenotype), "Other", phenotype),
     ithaID = ifelse(is.na(ithaID), "Not applicable", ithaID),
     # count / sample_size are nullable in the DB; suppressWarnings() silences the
     # expected "NAs introduced by coercion" when a non-numeric/empty value
@@ -678,7 +681,8 @@ db_ithamaps_entries = db_ithamaps_entries %>%
   select(
     -start_year, -score, -recomputed, -comment, -curated_by, -expert, -source_id, -pmid, -report,
     -doi, -end_year_assumed, -region_comment, -nationality_comment, -comments, -sample_size_comment, -min_age,
-    -max_age, -age_group_name, -n_female, -n_male, -sex_group_name, -admin0, -admin1, -admin2, -admin3, -hc_key, -entry_id
+    -max_age, -age_group_name, -n_female, -n_male, -sex_group_name, -admin0, -admin1, -admin2, -admin3, -hc_key, -entry_id,
+    -measure_id
   ) %>%
   distinct()
 
